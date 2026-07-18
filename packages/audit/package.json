@@ -1,0 +1,27 @@
+{
+  "name": "@elias/audit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Append-only, hash-chained (sha256) audit log with JSONL persistence and integrity verification. Compliance backbone for Rule 1:21-6 retention.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
