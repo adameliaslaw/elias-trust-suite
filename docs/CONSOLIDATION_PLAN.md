@@ -1,5 +1,15 @@
 # Elias Trust Suite — Consolidation Plan
 
+> **📍 Live progress tracker: see [docs/STATUS.md](STATUS.md)** (updated after every migration)
+
+## Progress (2026-07-19)
+- [x] Step 1: Scaffolds + packages/money + packages/audit (PR #1, 37 tests green)
+- [x] Step 2: apps/books ← quickbucks (PR #2 — byte-exact verified, **372/372 tests green**, P&L netProfit bug found & fixed)
+- [ ] Step 3: apps/iolta ← IOLTA-Reconciliation ← **NEXT**
+- [ ] Step 4: apps/billable ← Billable.ai
+- [ ] Step 5: apps/payroll ← Payroll
+- [ ] Step 6: apps/bills ← plaid-bill-tracker
+
 ## Goal
 One product for NJ attorney trust accounting + practice finance: IOLTA three-way reconciliation (Rule 1:21-6), payroll, bookkeeping, bill tracking, time/billing.
 
