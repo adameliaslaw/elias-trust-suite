@@ -1842,7 +1842,7 @@ route('GET', '/api/reports/pnl', (req, res, db, params, query) => {
     totalIncome: round2(totalIncome),
     expenses: Object.entries(expensesByCategory).map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount),
     totalExpenses: round2(totalExpenses),
-    netProfit: round2(totalExpenses)
+    netProfit: round2(totalIncome - totalExpenses)
   });
 });
 
