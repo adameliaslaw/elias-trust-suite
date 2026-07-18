@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuickBucks</title>
+  <meta name="theme-color" content="#2ca01c">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='48' fill='%232ca01c'/><text x='50' y='68' font-size='52' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'>Q</text></svg>">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="logo">
+        <span class="logo-mark">Q</span>
+        <span class="logo-text">QuickBucks</span>
+      </div>
+      <nav class="nav" id="nav">
+        <a href="#/dashboard" data-route="dashboard">
+          <svg viewBox="0 0 24 24"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+          Dashboard
+        </a>
+        <a href="#/invoices" data-route="invoices">
+          <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+          Invoices
+        </a>
+        <a href="#/time" data-route="time">
+          <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+          Time
+        </a>
+        <a href="#/expenses" data-route="expenses">
+          <svg viewBox="0 0 24 24"><path d="M21 18v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v1h-9a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h9zm-9-2h10V8H12v8zm4-2.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z"/></svg>
+          Expenses
+        </a>
+        <a href="#/banking" data-route="banking">
+          <svg viewBox="0 0 24 24"><path d="M4 10h3v7H4v-7zm6.5 0h3v7h-3v-7zM2 19h20v3H2v-3zm15-9h3v7h-3v-7zm-5-9L2 6v2h20V6L12 1z"/></svg>
+          Banking
+        </a>
+        <a href="#/payroll" data-route="payroll">
+          <svg viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1H6.32c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg>
+          Payroll
+        </a>
+        <a href="#/customers" data-route="customers">
+          <svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+          Customers
+        </a>
+        <a href="#/taxes" data-route="taxes">
+          <svg viewBox="0 0 24 24"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zM8.5 7A1.5 1.5 0 1 1 7 8.5 1.5 1.5 0 0 1 8.5 7zm7 10A1.5 1.5 0 1 1 17 15.5 1.5 1.5 0 0 1 15.5 17zm-8.1.6L6 16.2 16.6 5.6 18 7z"/></svg>
+          Taxes
+        </a>
+        <a href="#/reports" data-route="reports">
+          <svg viewBox="0 0 24 24"><path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
+          Reports
+        </a>
+      </nav>
+      <div class="sidebar-footer">Self-hosted · your data stays local</div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div class="topbar-left">
+          <select id="company-switch" title="Switch company"></select>
+          <div class="company" id="company-name" title="Company settings">…</div>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn" id="btn-logout" hidden>Log out</button>
+          <button class="btn btn-primary" id="btn-new">+ New</button>
+        </div>
+      </header>
+      <main id="view" class="view"></main>
+    </div>
+  </div>
+
+  <div id="login-root"></div>
+  <div id="modal-root"></div>
+  <div id="toast-root"></div>
+  <div id="tooltip" class="chart-tooltip" hidden></div>
+
+  <!-- First-run setup gate: the server locks the API (401 + setupRequired)
+       until a password exists. This wrapper watches every API response for
+       that signal; when it trips, the SPA is held on a one-time
+       create-password screen (all API calls freeze) and the page reloads
+       into the normal flow once the password — and its session — exists.
+       The server remains the real gate; this is only the walkthrough. -->
+  <script>
+  (function () {
+    var realFetch = window.fetch;
+    var setupMode = false;
+
+    function showSetup() {
+      if (document.getElementById('qb-setup')) return;
+      var overlay = document.createElement('div');
+      overlay.id = 'qb-setup';
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:var(--bg,#f4f5f7);padding:20px';
+      var card = document.createElement('form');
+      card.className = 'login-card';
+      card.autocomplete = 'off';
+      card.innerHTML =
+        '<div class="logo" style="justify-content:center;padding:0 0 6px">' +
+          '<span class="logo-mark">Q</span>' +
+          '<span class="logo-text" style="color:var(--ink)">QuickBucks</span></div>' +
+        '<p class="bank-help" style="margin:0 0 10px">Welcome to QuickBucks. The app is locked by ' +
+          'default — create the password that protects these books. You will need it to log in ' +
+          'from now on (and so will anyone else on the network).</p>' +
+        '<label class="field"><span>New password (at least 6 characters)</span>' +
+          '<input type="password" id="qb-setup-pw" autocomplete="new-password" autofocus></label>' +
+        '<label class="field"><span>Confirm password</span>' +
+          '<input type="password" id="qb-setup-pw2" autocomplete="new-password"></label>' +
+        '<div class="login-error" id="qb-setup-error" hidden></div>' +
+        '<button class="btn btn-primary" type="submit" style="width:100%">Create password &amp; start</button>';
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+      card.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var err = document.getElementById('qb-setup-error');
+        err.hidden = true;
+        var next = document.getElementById('qb-setup-pw').value;
+        if (next !== document.getElementById('qb-setup-pw2').value) {
+          err.textContent = 'Passwords do not match';
+          err.hidden = false;
+          return;
+        }
+        // Bypass the wrapper (it holds /api calls in setup mode): the server
+        // sets a session cookie on success, so a reload lands logged in.
+        realFetch('/api/password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ next: next })
+        }).then(function (res) {
+          return res.json().then(function (d) {
+            if (!res.ok) throw new Error(d.error || 'Setup failed');
+            location.reload();
+          });
+        }).catch(function (e2) {
+          err.textContent = e2.message;
+          err.hidden = false;
+        });
+      });
+      var pw = document.getElementById('qb-setup-pw');
+      if (pw) pw.focus();
+    }
+
+    window.fetch = function (url, opts) {
+      var u = String(url);
+      if (setupMode && u.indexOf('/api/') === 0) {
+        return new Promise(function () {});   // hold the SPA until reload
+      }
+      return realFetch.apply(this, arguments).then(function (res) {
+        if (setupMode) return res;
+        var ct = res.headers.get('content-type') || '';
+        var watched = u.indexOf('/api/auth-status') !== -1 || (u.indexOf('/api/') !== -1 && res.status === 401);
+        if (watched && ct.indexOf('application/json') !== -1) {
+          return res.clone().json().then(function (d) {
+            if (d && d.setupRequired) {
+              setupMode = true;
+              showSetup();
+            }
+            return res;
+          }, function () { return res; });
+        }
+        return res;
+      });
+    };
+  })();
+  </script>
+
+  <script src="/app.js"></script>
+</body>
+</html>
