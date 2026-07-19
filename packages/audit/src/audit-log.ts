@@ -32,16 +32,24 @@ export type VerificationResult =
   | { ok: true; entries: number }
   | { ok: false; entries: number; error: string; atSeq: number | null };
 
-interface ChainableBody {
+/** The canonical body an entry hash seals (everything except prevHash/hash). */
+export interface AuditEntryBody {
   seq: number;
   timestamp: string;
   type: string;
   payload: unknown;
 }
 
-function hashEntry(prevHash: string, body: ChainableBody): string {
+/**
+ * The chain hash for an entry body: sha256(prevHash + "\n" + canonical(body)).
+ * Exported so non-file storages (e.g. a Firestore compare-and-swap head) can
+ * seal entries with the exact same format the verifier checks.
+ */
+export function computeEntryHash(prevHash: string, body: AuditEntryBody): string {
   return sha256Hex(`${prevHash}\n${stableStringify(body)}`);
 }
+
+const hashEntry = computeEntryHash;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -92,6 +100,11 @@ export class AuditLog {
   private readonly storage: AuditStorage;
   private readonly clock: () => Date;
   private readonly tail: AuditEntry[] = [];
+  // Serializes append(): even the single owning writer forks its own chain
+  // when two append() calls interleave (both read tail.length before either
+  // pushes). Found via books' post-response Layer A append racing the next
+  // request's semantic append.
+  private appendQueue: Promise<unknown> = Promise.resolve();
 
   private constructor(storage: AuditStorage, clock: () => Date) {
     this.storage = storage;
@@ -110,20 +123,26 @@ export class AuditLog {
     return log;
   }
 
-  /** Append an event. Returns the sealed entry (with hash). */
-  async append<T extends AuditEventType>(
+  /** Append an event. Returns the sealed entry (with hash). Concurrent
+   *  calls are serialized internally — they can never fork the chain. */
+  append<T extends AuditEventType>(
     type: T,
     payload: AuditEventPayloads[T],
     opts?: { timestamp?: string },
   ): Promise<AuditEntry<T>> {
-    const seq = this.tail.length;
-    const prevHash = seq === 0 ? GENESIS_HASH : (this.tail[seq - 1] as AuditEntry).hash;
-    const timestamp = opts?.timestamp ?? this.clock().toISOString();
-    const body: ChainableBody = { seq, timestamp, type, payload };
-    const entry: AuditEntry<T> = { seq, timestamp, type, payload, prevHash, hash: hashEntry(prevHash, body) };
-    await this.storage.append(stableStringify(entry));
-    this.tail.push(entry);
-    return entry;
+    const run = this.appendQueue.then(async (): Promise<AuditEntry<T>> => {
+      const seq = this.tail.length;
+      const prevHash = seq === 0 ? GENESIS_HASH : (this.tail[seq - 1] as AuditEntry).hash;
+      const timestamp = opts?.timestamp ?? this.clock().toISOString();
+      const body: AuditEntryBody = { seq, timestamp, type, payload };
+      const entry: AuditEntry<T> = { seq, timestamp, type, payload, prevHash, hash: hashEntry(prevHash, body) };
+      await this.storage.append(stableStringify(entry));
+      this.tail.push(entry);
+      return entry;
+    });
+    // A failed append must not wedge every later append behind its rejection.
+    this.appendQueue = run.catch(() => undefined);
+    return run;
   }
 
   /** Number of entries appended through this log instance. */
