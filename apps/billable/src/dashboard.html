@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matterproof — AI Work Ledger</title>
+<style>
+  :root {
+    --ink: #1a1a1a; --paper: #fbfaf8; --muted: #6b6b6b; --line: #d8d4cc;
+    --accent: #1d4ed8; --good: #166534; --warn: #92400e; --card: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #e8e6e1; --paper: #181715; --muted: #a09c94; --line: #3a3733;
+            --accent: #7ea2f5; --good: #6ee7a0; --warn: #f5c97e; --card: #222019; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink);
+         font: 15px/1.5 system-ui, -apple-system, sans-serif; }
+  header { border-bottom: 3px double var(--ink); padding: 1.2rem 1.5rem .9rem; }
+  h1 { margin: 0; font: 700 1.5rem Georgia, 'Times New Roman', serif; letter-spacing: .01em; }
+  h1 small { font: italic .95rem Georgia, serif; color: var(--muted); margin-left: .6rem; }
+  main { max-width: 72rem; margin: 0 auto; padding: 1rem 1.5rem 3rem; }
+  .bar { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; margin: 1rem 0; }
+  .bar label { display: flex; flex-direction: column; font-size: .75rem; color: var(--muted);
+               text-transform: uppercase; letter-spacing: .05em; gap: .2rem; }
+  input, select, button { font: inherit; color: inherit; background: var(--card);
+    border: 1px solid var(--line); border-radius: 6px; padding: .35rem .55rem; }
+  button { cursor: pointer; }
+  button.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .spacer { flex: 1; }
+  .summary { display: flex; flex-wrap: wrap; gap: 1.8rem; padding: .9rem 1.1rem;
+             background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+  .summary div { min-width: 6.5rem; }
+  .summary b { display: block; font-size: 1.35rem; font-family: Georgia, serif; }
+  .summary span { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .wrap { overflow-x: auto; margin-top: 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+  table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  th, td { padding: .5rem .6rem; text-align: left; vertical-align: top; }
+  thead th { border-bottom: 2px solid var(--ink); font-size: .72rem; text-transform: uppercase;
+             letter-spacing: .06em; white-space: nowrap; }
+  tbody tr { border-top: 1px solid var(--line); }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  td.date, td.code { white-space: nowrap; }
+  .desc { min-width: 22rem; }
+  .editable { cursor: text; border-bottom: 1px dashed transparent; }
+  .editable:hover { border-bottom-color: var(--muted); }
+  .pill { border: 1px solid var(--line); border-radius: 999px; padding: .1rem .6rem;
+          font-size: .75rem; background: none; white-space: nowrap; }
+  .pill.on { border-color: var(--good); color: var(--good); font-weight: 600; }
+  .pill.nc { border-color: var(--warn); color: var(--warn); }
+  tr.writeoff td { opacity: .5; text-decoration: line-through; }
+  tr.writeoff td:last-child, tr.writeoff td:nth-last-child(2) { text-decoration: none; }
+  .empty { padding: 2.5rem; text-align: center; color: var(--muted); }
+  footer { margin-top: 1.2rem; color: var(--muted); font-size: .78rem; }
+  h2 { font: 700 1.05rem Georgia, serif; margin: 1.8rem 0 .6rem; }
+  .payform { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end;
+             padding: .9rem 1.1rem; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+  .payform label { display: flex; flex-direction: column; font-size: .75rem; color: var(--muted);
+                   text-transform: uppercase; letter-spacing: .05em; gap: .2rem; }
+  .check { display: flex; align-items: center; gap: .4rem; font-size: .85rem; }
+  #payresult { margin-top: .8rem; padding: .8rem 1rem; border: 1px solid var(--good); border-radius: 8px;
+               font-size: .85rem; word-break: break-all; display: none; }
+  #payresult.err { border-color: var(--warn); color: var(--warn); }
+  .status-paid { color: var(--good); font-weight: 600; white-space: nowrap; }
+  .status-due { color: var(--warn); font-weight: 600; white-space: nowrap; }
+
+  /* Phone layout */
+  @media (max-width: 640px) {
+    header { padding: .9rem 1rem .7rem; }
+    h1 { font-size: 1.2rem; } h1 small { display: block; margin: .15rem 0 0; }
+    main { padding: .6rem .8rem 2rem; }
+    .bar, .payform { gap: .5rem; }
+    .bar label, .payform label { flex: 1 1 44%; }
+    .bar input, .bar select, .payform input { width: 100%; }
+    button { padding: .5rem .7rem; } /* bigger touch targets */
+    .summary { gap: .9rem; padding: .7rem .8rem; }
+    .summary div { min-width: 5rem; }
+    .summary b { font-size: 1.1rem; }
+    table { font-size: .8rem; }
+    .desc { min-width: 14rem; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Matterproof <small>proof of work for every matter</small></h1>
+</header>
+<main>
+  <div class="bar">
+    <label>From <input type="date" id="from"></label>
+    <label>To <input type="date" id="to"></label>
+    <label>Client <select id="client"><option value="">All clients</option></select></label>
+    <button class="primary" id="refresh">Apply</button>
+    <span class="spacer"></span>
+    <button id="reviewAll" title="Mark every visible entry as attorney-reviewed">Mark all reviewed</button>
+    <button data-x="txt">Timesheet</button>
+    <button data-x="csv">CSV</button>
+    <button data-x="ledes">LEDES 1998B</button>
+    <button data-x="html">Statement</button>
+  </div>
+
+  <div class="summary" id="summary"></div>
+
+  <div class="wrap">
+    <table>
+      <thead><tr>
+        <th>Date</th><th>Client / Matter</th><th>Code</th><th class="desc">Description of services</th>
+        <th class="num">Steps</th><th class="num">Hours</th><th class="num">Amount</th>
+        <th>Charge</th><th>Reviewed</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>No time entries for this period.</div>
+  </div>
+
+  <h2>Payments</h2>
+  <div class="payform">
+    <label>Client email <input type="email" id="payEmail" placeholder="client@example.com"></label>
+    <span class="check"><input type="checkbox" id="paySend"><label for="paySend" style="margin:0;text-transform:none;font-size:.85rem;color:inherit;">Email the request (SendGrid)</label></span>
+    <button class="primary" id="payGo" title="Builds a LawPay link from the reviewed, unbilled entries matching the filters above">Request payment for filtered entries</button>
+  </div>
+  <div id="payresult"></div>
+
+  <div class="wrap">
+    <table>
+      <thead><tr>
+        <th>Date</th><th>Reference</th><th>Description</th><th class="num">Amount</th><th>Status</th><th></th>
+      </tr></thead>
+      <tbody id="reqRows"></tbody>
+    </table>
+    <div class="empty" id="reqEmpty" hidden>No payment requests yet.</div>
+  </div>
+
+  <footer>
+    Hours are actual recorded activity rounded to billing increments — never time "saved."
+    Review each entry before billing (ABA Formal Op. 512). Data stays on this machine.
+  </footer>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+let state = { entries: [], totals: {}, config: {} };
+
+function query() {
+  const p = new URLSearchParams();
+  for (const k of ['from', 'to', 'client']) { const v = $('#' + k).value; if (v) p.set(k, v); }
+  return p.toString();
+}
+
+function money(n) {
+  const sym = state.config.currency === 'USD' ? '$' : (state.config.currency || '') + ' ';
+  return sym + Number(n || 0).toFixed(2);
+}
+
+async function load() {
+  const res = await fetch('/api/entries?' + query());
+  const data = await res.json();
+  state = data;
+  const t = data.totals;
+  const showMoney = (data.config.rate || 0) > 0;
+  $('#summary').innerHTML = `
+    <div><b>${t.hours.toFixed(1)}</b><span>hours</span></div>
+    ${showMoney ? `<div><b>${money(t.amount)}</b><span>fees</span></div>` : ''}
+    ${t.aiCost ? `<div><b>${money(t.aiCost)}</b><span>AI costs</span></div>` : ''}
+    <div><b>${t.count}</b><span>entries</span></div>
+    <div><b>${t.steps}</b><span>AI steps</span></div>
+    <div><b style="color:${t.unreviewed ? 'var(--warn)' : 'var(--good)'}">${t.unreviewed}</b><span>unreviewed</span></div>`;
+
+  const sel = $('#client');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">All clients</option>' +
+    data.clients.map((c) => `<option${c === current ? ' selected' : ''}>${esc(c)}</option>`).join('');
+
+  await loadRequests();
+
+  const rows = $('#rows');
+  rows.innerHTML = data.entries.map((e) => `
+    <tr data-id="${e.id}" class="${e.writeOff ? 'writeoff' : ''}">
+      <td class="date">${e.date}</td>
+      <td>${esc(e.client)}<br><small style="color:var(--muted)">${esc(e.matter)}</small></td>
+      <td class="code">${esc(e.code)}</td>
+      <td class="desc"><span class="editable" data-f="description">${esc(e.description)}</span></td>
+      <td class="num">${e.steps || ''}</td>
+      <td class="num"><span class="editable" data-f="hours">${e.hours.toFixed(1)}</span></td>
+      <td class="num">${money(e.amount)}</td>
+      <td><button class="pill ${e.writeOff ? 'nc' : ''}" data-f="writeOff">${e.writeOff ? 'No charge' : 'Billable'}</button></td>
+      <td><button class="pill ${e.reviewed ? 'on' : ''}" data-f="reviewed">${e.reviewed ? '✓ Reviewed' : 'Review'}</button></td>
+    </tr>`).join('');
+  $('#empty').hidden = data.entries.length > 0;
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+async function override(id, patch) {
+  await fetch('/api/override', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, ...patch }) });
+  await load();
+}
+
+document.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button.pill');
+  if (btn && btn.dataset.f) { // entry-row toggles only; payment pills handled elsewhere
+    const id = btn.closest('tr').dataset.id;
+    const entry = state.entries.find((e) => e.id === id);
+    const f = btn.dataset.f;
+    return override(id, { [f]: !entry[f] });
+  }
+  const span = ev.target.closest('.editable');
+  if (span && !span.isContentEditable) {
+    span.contentEditable = 'plaintext-only';
+    span.focus();
+    document.getSelection().selectAllChildren(span);
+    const finish = async (save) => {
+      span.contentEditable = 'false';
+      if (!save) return load();
+      const id = span.closest('tr').dataset.id;
+      const f = span.dataset.f;
+      const raw = span.textContent.trim();
+      const value = f === 'hours' ? Number(raw) : raw;
+      if (f === 'hours' && !(value >= 0)) return load();
+      if (!raw) return load();
+      await override(id, { [f]: value, reviewed: true });
+    };
+    span.addEventListener('blur', () => finish(true), { once: true });
+    span.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); span.blur(); }
+      if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+  }
+});
+
+$('#refresh').addEventListener('click', load);
+$('#reviewAll').addEventListener('click', async () => {
+  for (const e of state.entries.filter((e) => !e.reviewed)) {
+    await fetch('/api/override', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: e.id, reviewed: true }) });
+  }
+  await load();
+});
+document.querySelectorAll('button[data-x]').forEach((b) =>
+  b.addEventListener('click', () => window.open('/export.' + b.dataset.x + '?' + query(), '_blank')));
+
+async function loadRequests() {
+  const data = await (await fetch('/api/requests')).json();
+  const rows = $('#reqRows');
+  rows.innerHTML = data.requests.map((r) => `
+    <tr data-ref="${esc(r.reference)}">
+      <td class="date">${esc(r.date)}</td>
+      <td class="code">${esc(r.reference)}</td>
+      <td>${esc(r.description)}${r.email ? `<br><small style="color:var(--muted)">${esc(r.email)}</small>` : ''}</td>
+      <td class="num">${money(r.amountCents / 100)}</td>
+      <td>${r.paid ? `<span class="status-paid">✓ Paid ${esc(r.paidAt)}</span>` : '<span class="status-due">Outstanding</span>'}</td>
+      <td>${r.paid ? '' : '<button class="pill" data-paid>Mark paid</button>'}</td>
+    </tr>`).join('');
+  $('#reqEmpty').hidden = data.requests.length > 0;
+  // Outstanding A/R tile joins the summary strip.
+  const due = data.outstandingCents / 100;
+  document.querySelectorAll('#summary .ar').forEach((el) => el.remove());
+  $('#summary').insertAdjacentHTML('beforeend',
+    `<div class="ar"><b style="color:${due > 0 ? 'var(--warn)' : 'var(--good)'}">${money(due)}</b><span>outstanding</span></div>`);
+}
+
+$('#payGo').addEventListener('click', async () => {
+  const body = {};
+  for (const k of ['from', 'to', 'client']) { const v = $('#' + k).value; if (v) body[k] = v; }
+  const email = $('#payEmail').value.trim();
+  if (email) body.email = email;
+  body.send = $('#paySend').checked;
+  const res = await fetch('/api/lawpay/link', { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json();
+  const box = $('#payresult');
+  box.style.display = 'block';
+  if (!res.ok) {
+    box.className = 'err';
+    box.textContent = data.error;
+    return;
+  }
+  box.className = '';
+  box.innerHTML = `<b>${esc(data.reference)}</b> — ${money(data.amountCents / 100)} for ${data.included} entries` +
+    (data.emailed ? ' · <b>emailed to client</b>' : '') +
+    `<br><a href="${esc(data.url)}" target="_blank">${esc(data.url)}</a>` +
+    ` <button class="pill" id="copyLink">Copy link</button>`;
+  $('#copyLink').addEventListener('click', () => navigator.clipboard.writeText(data.url));
+  await load();
+});
+
+document.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-paid]');
+  if (!btn) return;
+  const reference = btn.closest('tr').dataset.ref;
+  const res = await fetch('/api/requests/paid', { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reference }) });
+  if (res.ok) await loadRequests();
+});
+
+load();
+</script>
+</body>
+</html>
