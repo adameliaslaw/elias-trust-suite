@@ -8,6 +8,7 @@
 //     entries are frozen (no edit/delete) until the invoice is deleted,
 //     which releases them back to unbilled
 const { round2, todayISO, uid } = require('./store');
+const { mul, add } = require('./money');
 
 function statusOf(t) {
   if (t.invoiceId) return 'billed';
@@ -15,7 +16,9 @@ function statusOf(t) {
 }
 
 function decorateEntry(t) {
-  return { ...t, amount: round2(t.hours * t.rate), status: statusOf(t) };
+  // hours x rate rounded half-up per ENTRY: 1.5h x $13.35 bills $20.03,
+  // never the float64 $20.02 undercharge.
+  return { ...t, amount: mul(t.rate, t.hours), status: statusOf(t) };
 }
 
 // Validate and normalize a create/update body. Returns { error } or { entry }.
@@ -62,7 +65,7 @@ function wipByCustomer(db) {
     const g = groups.get(t.customerId);
     g.entries += 1;
     g.hours = round2(g.hours + t.hours);
-    g.amount = round2(g.amount + t.hours * t.rate);
+    g.amount = add(g.amount, mul(t.rate, t.hours));
     if (t.date < g.oldest) g.oldest = t.date;
   }
   return [...groups.values()].sort((a, b) => b.amount - a.amount);

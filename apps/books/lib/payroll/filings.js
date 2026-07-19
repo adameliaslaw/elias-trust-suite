@@ -11,6 +11,7 @@
 // - Form 940 (annual FUTA): NJ single-state, full 5.4% credit, 0.6%
 //   effective rate, §125 benefits exempt.
 const { cents } = require('./engine');
+const money = require('../money');
 const deposits = require('./deposits');
 const { tablesForYear } = require('./engine');
 
@@ -32,10 +33,10 @@ function depositsForQuarter(db, year, quarter) {
   for (const d of db.payrollDeposits) {
     if (d.bucket !== 'federal_941') continue;
     const key = d.periodKey || '';
-    if (months.has(key) || (key.length === 10 && months.has(key.slice(0, 7)))) attributed += d.amount;
-    else if (!key) unattributed += d.amount;
+    if (months.has(key) || (key.length === 10 && months.has(key.slice(0, 7)))) attributed = money.add(attributed, d.amount);
+    else if (!key) unattributed = money.add(unattributed, d.amount);
   }
-  return { attributed: cents(attributed), unattributed: cents(unattributed) };
+  return { attributed, unattributed };
 }
 
 function compute941(db, year, quarter, depositsPaidOverride) {
@@ -50,29 +51,30 @@ function compute941(db, year, quarter, depositsPaidOverride) {
 
   for (const { payDate, employeeId, c } of rows) {
     employees.add(employeeId);
-    l2 += c.fitWages;
-    l3 += c.fit;
+    l2 = money.add(l2, c.fitWages);
+    l3 = money.add(l3, c.fit);
     const tipsTaxable = c.ssTipsTaxable || 0;
-    ssWages += c.ssTaxable - tipsTaxable;    // line 5a: non-tip wages
-    ssTips += tipsTaxable;                   // line 5b
-    medWages += c.medicareTaxable;
-    addlWages += c.addlMedicareWages || 0;
-    actualFica += c.ss + c.erSs + c.medicare + c.erMedicare;
+    ssWages = money.add(ssWages, money.sub(c.ssTaxable, tipsTaxable));  // line 5a: non-tip wages
+    ssTips = money.add(ssTips, tipsTaxable);                            // line 5b
+    medWages = money.add(medWages, c.medicareTaxable);
+    addlWages = money.add(addlWages, c.addlMedicareWages || 0);
+    actualFica = money.add(actualFica, c.ss, c.erSs, c.medicare, c.erMedicare);
     const liability = deposits.federalLiabilityOf(c);
-    monthly[Number(payDate.slice(5, 7))] += liability;
-    byPayday.set(payDate, (byPayday.get(payDate) || 0) + liability);
+    const m = Number(payDate.slice(5, 7));
+    monthly[m] = money.add(monthly[m], liability);
+    byPayday.set(payDate, money.add(byPayday.get(payDate) || 0, liability));
   }
 
-  const l5a2 = cents(ssWages * SS_COMBINED_RATE);
-  const l5b2 = cents(ssTips * SS_COMBINED_RATE);
-  const l5c2 = cents(medWages * MEDICARE_COMBINED_RATE);
-  const l5d2 = cents(addlWages * ADDL_MEDICARE_RATE);
-  const l5e = cents(l5a2 + l5b2 + l5c2 + l5d2);
-  const l6 = cents(cents(l3) + l5e);
+  const l5a2 = money.mul(ssWages, SS_COMBINED_RATE);
+  const l5b2 = money.mul(ssTips, SS_COMBINED_RATE);
+  const l5c2 = money.mul(medWages, MEDICARE_COMBINED_RATE);
+  const l5d2 = money.mul(addlWages, ADDL_MEDICARE_RATE);
+  const l5e = money.sum(l5a2, l5b2, l5c2, l5d2);
+  const l6 = money.add(l3, l5e);
   // Fractions of cents: actually-withheld/matched FICA vs the rate-times-
   // wages computation on lines 5a-5d.
-  const l7 = cents(cents(actualFica) - l5e);
-  const l10 = cents(l6 + l7);
+  const l7 = money.sub(actualFica, l5e);
+  const l10 = money.add(l6, l7);
   const l12 = l10;
   const dep = depositsForQuarter(db, year, quarter);
   const l13 = depositsPaidOverride !== undefined ? cents(depositsPaidOverride) : dep.attributed;
@@ -80,12 +82,12 @@ function compute941(db, year, quarter, depositsPaidOverride) {
   return {
     year, quarter,
     l1Employees: employees.size,
-    l2Wages: cents(l2),
-    l3Fit: cents(l3),
-    l5aSsWages: cents(ssWages), l5aSsTax: l5a2,
-    l5bSsTips: cents(ssTips), l5bSsTipsTax: l5b2,
-    l5cMedWages: cents(medWages), l5cMedTax: l5c2,
-    l5dAddlWages: cents(addlWages), l5dAddlTax: l5d2,
+    l2Wages: l2,
+    l3Fit: l3,
+    l5aSsWages: ssWages, l5aSsTax: l5a2,
+    l5bSsTips: ssTips, l5bSsTipsTax: l5b2,
+    l5cMedWages: medWages, l5cMedTax: l5c2,
+    l5dAddlWages: addlWages, l5dAddlTax: l5d2,
     l5eTotalFica: l5e,
     l6BeforeAdjust: l6,
     l7Fractions: l7,
@@ -93,11 +95,11 @@ function compute941(db, year, quarter, depositsPaidOverride) {
     l12TotalAfterCredits: l12,
     l13Deposits: l13,
     l13Unattributed: dep.unattributed,
-    l14BalanceDue: cents(Math.max(l12 - l13, 0)),
-    l15Overpayment: cents(Math.max(l13 - l12, 0)),
-    monthlyLiability: Object.fromEntries(Object.entries(monthly).map(([m, v]) => [m, cents(v)])),
+    l14BalanceDue: Math.max(money.sub(l12, l13), 0),
+    l15Overpayment: Math.max(money.sub(l13, l12), 0),
+    monthlyLiability: monthly,
     scheduleB: [...byPayday.entries()].sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([payDate, liability]) => ({ payDate, liability: cents(liability) })),
+      .map(([payDate, liability]) => ({ payDate, liability })),
     checks: rows.length
   };
 }
@@ -110,23 +112,23 @@ function computeNj927(db, year, quarter) {
   let gross = 0, git = 0, uiWages = 0, tdiWages = 0;
   for (const { payDate, c } of rows) {
     const month = Number(payDate.slice(5, 7));
-    gitByMonth[month] += c.njSit;
-    git += c.njSit;
-    gross += c.gross;
-    uiWages += c.njUiTaxable;
-    tdiWages += c.njTdiTaxable;
+    gitByMonth[month] = money.add(gitByMonth[month], c.njSit);
+    git = money.add(git, c.njSit);
+    gross = money.add(gross, c.gross);
+    uiWages = money.add(uiWages, c.njUiTaxable);
+    tdiWages = money.add(tdiWages, c.njTdiTaxable);
   }
   const contributions = deposits.nj927Contributions(db, year, quarter);
   return {
     year, quarter,
     due: deposits.nj927DueDate(year, quarter),
-    grossWages: cents(gross),
-    gitWithheld: cents(git),
-    gitByMonth: Object.fromEntries(Object.entries(gitByMonth).map(([m, v]) => [m, cents(v)])),
-    uiTaxableWages: cents(uiWages),
-    tdiTaxableWages: cents(tdiWages),
+    grossWages: gross,
+    gitWithheld: git,
+    gitByMonth,
+    uiTaxableWages: uiWages,
+    tdiTaxableWages: tdiWages,
     contributions,
-    totalDue: cents(cents(git) + contributions.amount),
+    totalDue: money.add(git, contributions.amount),
     checks: rows.length
   };
 }
@@ -143,11 +145,10 @@ function computeWr30(db, year, quarter) {
       byEmployee.set(employeeId, { employeeId, name: employeeName, gross: 0, checks: 0 });
     }
     const e = byEmployee.get(employeeId);
-    e.gross += c.gross;
+    e.gross = money.add(e.gross, c.gross);
     e.checks += 1;
   }
   return [...byEmployee.values()]
-    .map(e => ({ ...e, gross: cents(e.gross) }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -158,29 +159,29 @@ function compute940(db, year, depositsPaidOverride) {
   let exemptPayments = 0;   // line 4 (Section 125 benefits)
   let futaTaxable = 0;      // line 7
   for (const { c } of rows) {
-    totalPayments += c.gross;
-    exemptPayments += c.dedPretaxHealth || 0;
-    futaTaxable += c.futaTaxable;
+    totalPayments = money.add(totalPayments, c.gross);
+    exemptPayments = money.add(exemptPayments, c.dedPretaxHealth || 0);
+    futaTaxable = money.add(futaTaxable, c.futaTaxable);
   }
-  const subjectWages = totalPayments - exemptPayments;
-  const l5Excess = subjectWages - futaTaxable;   // over the $7,000-per-employee base
-  const l8Tax = cents(futaTaxable * tables.FUTA_RATE);
-  const attributed = cents(db.payrollDeposits
+  const subjectWages = money.sub(totalPayments, exemptPayments);
+  const l5Excess = money.sub(subjectWages, futaTaxable);   // over the $7,000-per-employee base
+  const l8Tax = money.mul(futaTaxable, tables.FUTA_RATE);
+  const attributed = money.sum(...db.payrollDeposits
     .filter(d => d.bucket === 'futa' && (d.periodKey || '').startsWith(String(year)))
-    .reduce((s, d) => s + d.amount, 0));
+    .map(d => d.amount));
   const l13 = depositsPaidOverride !== undefined ? cents(depositsPaidOverride) : attributed;
   return {
     year,
-    l3TotalPayments: cents(totalPayments),
-    l4ExemptPayments: cents(exemptPayments),
-    l5ExcessOverBase: cents(l5Excess),
-    l6Subtotal: cents(exemptPayments + l5Excess),
-    l7TaxableFutaWages: cents(futaTaxable),
+    l3TotalPayments: totalPayments,
+    l4ExemptPayments: exemptPayments,
+    l5ExcessOverBase: l5Excess,
+    l6Subtotal: money.add(exemptPayments, l5Excess),
+    l7TaxableFutaWages: futaTaxable,
     l8FutaTax: l8Tax,
     l12TotalTax: l8Tax,
     l13Deposits: l13,
-    l14BalanceDue: cents(Math.max(l8Tax - l13, 0)),
-    l15Overpayment: cents(Math.max(l13 - l8Tax, 0)),
+    l14BalanceDue: Math.max(money.sub(l8Tax, l13), 0),
+    l15Overpayment: Math.max(money.sub(l13, l8Tax), 0),
     quarterlyLiabilities: deposits.futaLiabilities(db, year),
     checks: rows.length
   };

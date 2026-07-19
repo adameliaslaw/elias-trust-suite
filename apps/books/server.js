@@ -4,6 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { load, save, companies, createCompany, uid, decorateInvoice, round2, todayISO } = require('./lib/store');
+const money = require('./lib/money');
 const { loadGlobal, saveGlobal, taxProfileForYear } = require('./lib/global');
 const tax1040 = require('./lib/tax1040');
 const nj1040 = require('./lib/nj1040');
@@ -222,8 +223,8 @@ route('GET', '/api/customers', (req, res, db) => {
     const invs = db.invoices.filter(i => i.customerId === c.id).map(decorateInvoice);
     return {
       ...c,
-      openBalance: round2(invs.filter(i => i.status !== 'draft').reduce((s, i) => s + i.balance, 0)),
-      totalBilled: round2(invs.filter(i => i.status !== 'draft').reduce((s, i) => s + i.total, 0)),
+      openBalance: money.sum(...invs.filter(i => i.status !== 'draft').map(i => i.balance)),
+      totalBilled: money.sum(...invs.filter(i => i.status !== 'draft').map(i => i.total)),
       invoiceCount: invs.length
     };
   });
@@ -422,7 +423,7 @@ route('POST', '/api/sales/import-csv', async (req, res, db) => {
     inv.draft = false;
     existing.add(key);
     imported++;
-    const computedTax = round2(total - day.netSales);
+    const computedTax = money.sub(total, day.netSales);
     if (day.tax && Math.abs(computedTax - day.tax) > 0.02) {
       warnings.push(`${day.date}: POS reported ${day.tax.toFixed(2)} tax but the books computed ${computedTax.toFixed(2)} — check the rate in Settings`);
     }
@@ -597,9 +598,9 @@ route('GET', '/api/vendors/1099', (req, res, db, params, query) => {
     const key = name.toLowerCase();
     if (!byVendor.has(key)) byVendor.set(key, { name, reportable: 0, cardTotal: 0, total: 0 });
     const v = byVendor.get(key);
-    v.total = round2(v.total + e.amount);
-    if (e.paymentMethod === 'Credit card') v.cardTotal = round2(v.cardTotal + e.amount);
-    else v.reportable = round2(v.reportable + e.amount);
+    v.total = money.add(v.total, e.amount);
+    if (e.paymentMethod === 'Credit card') v.cardTotal = money.add(v.cardTotal, e.amount);
+    else v.reportable = money.add(v.reportable, e.amount);
   }
   // Tracked vendors with no expenses this year still show, at zero.
   for (const name of db.vendors1099) {
@@ -1205,7 +1206,7 @@ route('GET', '/api/payroll/deposits', (req, res, db, params, query) => {
     ...g,
     bucket,
     paid: deposits.paidFor(db, bucket, g.key),
-    outstanding: round2(Math.max(g.amount - deposits.paidFor(db, bucket, g.key), 0))
+    outstanding: Math.max(money.sub(g.amount, deposits.paidFor(db, bucket, g.key)), 0)
   }));
   const quarters = [1, 2, 3, 4].filter(q => deposits.quarterEnd(year, q) <= todayISO() ||
     db.payRuns.some(r => r.status === 'finalized' && Number(r.payDate.slice(0, 4)) === year && deposits.quarterOf(r.payDate) === q));
@@ -1241,7 +1242,7 @@ route('GET', '/api/payroll/nacha/tax', (req, res, db, params, query) => {
   if (!groups) return badRequest(res, 'Unknown deposit bucket');
   const g = groups().find(x => x.key === key);
   if (!g) return notFound(res);
-  const amount = round2(Math.max(g.amount - deposits.paidFor(db, bucket, g.key), 0));
+  const amount = Math.max(money.sub(g.amount, deposits.paidFor(db, bucket, g.key)), 0);
   if (!(amount > 0)) return badRequest(res, 'Nothing outstanding for this obligation');
 
   const company = {
@@ -1257,7 +1258,7 @@ route('GET', '/api/payroll/nacha/tax', (req, res, db, params, query) => {
     const addenda = nacha.eftpsTxp(s.ein, nacha.FED_941_DEPOSIT, g.periodEnd, amount, [
       [nacha.SUB_SOCIAL_SECURITY, g.ss],
       [nacha.SUB_MEDICARE, g.medicare],
-      [nacha.SUB_WITHHOLDING, round2(amount - g.ss - g.medicare)]
+      [nacha.SUB_WITHHOLDING, money.sub(amount, g.ss, g.medicare)]
     ]);
     payment = { routing: nacha.TREASURY_ROUTING, account: nacha.TREASURY_ACCOUNT, receiverName: nacha.TREASURY_NAME, amount, addenda, description: 'TAXPAYMENT', identification: s.ein };
   } else if (bucket === 'futa') {
@@ -1384,28 +1385,28 @@ function companyYtd(companyId, year) {
     if (inv.draft) continue;
     const dInv = decorateInvoice(inv);
     for (const p of inv.payments || []) {
-      if (inRange(p.date, from, to)) income += salestax.paymentIncomeParts(dInv, p).income;
+      if (inRange(p.date, from, to)) income = money.add(income, salestax.paymentIncomeParts(dInv, p).income);
     }
   }
   let expenses = 0;
   for (const e of cdb.expenses) {
-    if (inRange(e.date, from, to)) expenses += e.amount;
+    if (inRange(e.date, from, to)) expenses = money.add(expenses, e.amount);
   }
   let meals = 0;     // for the SEB non-deducted-50% subtraction
   for (const e of cdb.expenses) {
-    if (e.category === 'Meals & Entertainment' && inRange(e.date, from, to)) meals += e.amount;
+    if (e.category === 'Meals & Entertainment' && inRange(e.date, from, to)) meals = money.add(meals, e.amount);
   }
   let w2Wages = 0;   // gross payroll wages paid, for the QBI wage limit
   for (const run of cdb.payRuns) {
     if (run.status !== 'finalized' || Number(run.payDate.slice(0, 4)) !== year) continue;
-    w2Wages += run.totals ? run.totals.gross : 0;
+    w2Wages = money.add(w2Wages, run.totals ? run.totals.gross : 0);
   }
   return {
-    income: round2(income),
-    expenses: round2(expenses),
-    netProfit: round2(income - expenses),
-    mealsExpense: round2(meals),
-    w2Wages: round2(w2Wages)
+    income,
+    expenses,
+    netProfit: money.sub(income, expenses),
+    mealsExpense: meals,
+    w2Wages
   };
 }
 
@@ -1419,7 +1420,7 @@ function householdInput(g, year, adjustments = {}) {
       id: c.id,
       name: c.name,
       ytd,
-      netProfit: round2(ytd.netProfit + (Number(adj.incomeDelta) || 0) - (Number(adj.expenseDelta) || 0)),
+      netProfit: money.sum(ytd.netProfit, Number(adj.incomeDelta) || 0, -(Number(adj.expenseDelta) || 0)),
       w2Wages: ytd.w2Wages,
       sstb: !!p.companySstb[c.id]
     };
@@ -1478,7 +1479,7 @@ function njEstimateFor(input, profile) {
     filingStatus: input.filingStatus,
     wages: input.wages,
     businesses: undefined,
-    businessNet: input.businesses.reduce((s, b) => s + b.netProfit, 0),
+    businessNet: money.sum(...input.businesses.map(b => b.netProfit)),
     rentalNet: input.portfolio ? input.portfolio.scheduleENetTotal : 0,
     otherIncome: input.otherIncome,
     njDependents: profile.njDependents,
@@ -1718,12 +1719,12 @@ route('POST', '/api/household/scenario', async (req, res) => {
     nj: { baseline: njBaseline, scenario: njScenario },
     borrowing: { baseline: lenderSummary(baseLender), scenario: lenderSummary(scLender) },
     delta: {
-      njTax: round2(njScenario.tax - njBaseline.tax),
-      totalTax: round2(scenario.totalTax - baseline.totalTax),
-      taxableIncome: round2(scenario.taxableIncome - baseline.taxableIncome),
-      balanceDue: round2(scenario.balanceDue - baseline.balanceDue),
-      grossMonthlyQualifying: round2(scLender.borrowing.income.grossMonthlyQualifying - baseLender.borrowing.income.grossMonthlyQualifying),
-      maxPurchase: round2(scLender.borrowing.maxPurchase.maxPrice - baseLender.borrowing.maxPurchase.maxPrice)
+      njTax: money.sub(njScenario.tax, njBaseline.tax),
+      totalTax: money.sub(scenario.totalTax, baseline.totalTax),
+      taxableIncome: money.sub(scenario.taxableIncome, baseline.taxableIncome),
+      balanceDue: money.sub(scenario.balanceDue, baseline.balanceDue),
+      grossMonthlyQualifying: money.sub(scLender.borrowing.income.grossMonthlyQualifying, baseLender.borrowing.income.grossMonthlyQualifying),
+      maxPurchase: money.sub(scLender.borrowing.maxPurchase.maxPrice, baseLender.borrowing.maxPurchase.maxPrice)
     }
   });
 });
@@ -1775,28 +1776,28 @@ route('GET', '/api/dashboard', (req, res, db) => {
     for (const p of inv.payments || []) {
       // Collected sales tax is held in trust for the State — not income.
       const { income } = salestax.paymentIncomeParts(inv, p);
-      totalIncome += income;
+      totalIncome = money.add(totalIncome, income);
       const m = (p.date || '').slice(0, 7);
-      if (byMonth[m]) byMonth[m].income = round2(byMonth[m].income + income);
+      if (byMonth[m]) byMonth[m].income = money.add(byMonth[m].income, income);
     }
   }
   let totalExpenses = 0;
   for (const e of db.expenses) {
-    totalExpenses += e.amount;
+    totalExpenses = money.add(totalExpenses, e.amount);
     const m = e.date.slice(0, 7);
-    if (byMonth[m]) byMonth[m].expenses = round2(byMonth[m].expenses + e.amount);
+    if (byMonth[m]) byMonth[m].expenses = money.add(byMonth[m].expenses, e.amount);
   }
 
   const open = invoices.filter(i => i.balance > 0);
   const overdue = open.filter(i => i.dueDate < today);
 
   sendJSON(res, 200, {
-    totalIncome: round2(totalIncome),
-    totalExpenses: round2(totalExpenses),
-    netProfit: round2(totalIncome - totalExpenses),
-    outstanding: round2(open.reduce((s, i) => s + i.balance, 0)),
+    totalIncome,
+    totalExpenses,
+    netProfit: money.sub(totalIncome, totalExpenses),
+    outstanding: money.sum(...open.map(i => i.balance)),
     outstandingCount: open.length,
-    overdueAmount: round2(overdue.reduce((s, i) => s + i.balance, 0)),
+    overdueAmount: money.sum(...overdue.map(i => i.balance)),
     overdueCount: overdue.length,
     monthly,
     recentInvoices: db.invoices.map(inv => {
@@ -1823,8 +1824,8 @@ route('GET', '/api/reports/pnl', (req, res, db, params, query) => {
     for (const p of inv.payments || []) {
       if (!inRange(p.date, from, to)) continue;
       const { income } = salestax.paymentIncomeParts(dInv, p);
-      incomeByCustomer[name] = round2((incomeByCustomer[name] || 0) + income);
-      totalIncome += income;
+      incomeByCustomer[name] = money.add(incomeByCustomer[name] || 0, income);
+      totalIncome = money.add(totalIncome, income);
     }
   }
 
@@ -1832,17 +1833,17 @@ route('GET', '/api/reports/pnl', (req, res, db, params, query) => {
   let totalExpenses = 0;
   for (const e of db.expenses) {
     if (!inRange(e.date, from, to)) continue;
-    expensesByCategory[e.category] = round2((expensesByCategory[e.category] || 0) + e.amount);
-    totalExpenses += e.amount;
+    expensesByCategory[e.category] = money.add(expensesByCategory[e.category] || 0, e.amount);
+    totalExpenses = money.add(totalExpenses, e.amount);
   }
 
   sendJSON(res, 200, {
     from, to,
     income: Object.entries(incomeByCustomer).map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount),
-    totalIncome: round2(totalIncome),
+    totalIncome,
     expenses: Object.entries(expensesByCategory).map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount),
-    totalExpenses: round2(totalExpenses),
-    netProfit: round2(totalIncome - totalExpenses)
+    totalExpenses,
+    netProfit: money.sub(totalIncome, totalExpenses)
   });
 });
 
@@ -1861,8 +1862,8 @@ route('GET', '/api/reports/aging', (req, res, db) => {
     else if (daysLate <= 90) buckets['61-90'].push(entry);
     else buckets['90+'].push(entry);
   }
-  const summary = Object.fromEntries(Object.entries(buckets).map(([k, v]) => [k, round2(v.reduce((s, e) => s + e.balance, 0))]));
-  sendJSON(res, 200, { buckets, summary, total: round2(Object.values(summary).reduce((s, v) => s + v, 0)) });
+  const summary = Object.fromEntries(Object.entries(buckets).map(([k, v]) => [k, money.sum(...v.map(e => e.balance))]));
+  sendJSON(res, 200, { buckets, summary, total: money.sum(...Object.values(summary)) });
 });
 
 // -- audit log (written centrally in the dispatcher for every mutation) --

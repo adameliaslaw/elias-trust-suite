@@ -8,7 +8,7 @@
 // Tips are NOT income — they belong to the staff and flow through payroll
 // (the timecards import carries per-employee tips). The parser totals them
 // so the import summary can say what to expect in the next pay run.
-const { round2 } = require('./store');
+const money = require('./money');
 const { parseDateCell } = require('./payroll/timecards');
 
 const HEADER_ALIASES = {
@@ -77,19 +77,19 @@ function parseSalesCSV(text) {
     const tax = num(cell('tax'));
     const tips = num(cell('tips'));
     // Prefer an explicit net column; otherwise back into it from gross.
-    const net = 'net' in mapping ? num(cell('net')) : num(cell('gross')) - tax - tips;
-    day.netSales += net;
-    day.tax += tax;
-    day.tips += tips;
+    const net = 'net' in mapping ? num(cell('net')) : money.sub(num(cell('gross')), tax, tips);
+    day.netSales = money.add(day.netSales, net);
+    day.tax = money.add(day.tax, tax);
+    day.tips = money.add(day.tips, tips);
   }
 
   const days = [...byDay.values()]
-    .map(d => ({ date: d.date, netSales: round2(d.netSales), tax: round2(d.tax), tips: round2(d.tips) }))
+    .map(d => ({ date: d.date, netSales: d.netSales, tax: d.tax, tips: d.tips }))
     .filter(d => d.netSales > 0 || d.tax > 0 || d.tips > 0)
     .sort((a, b) => a.date.localeCompare(b.date));
   return {
     days,
-    tipsTotal: round2(days.reduce((s, d) => s + d.tips, 0)),
+    tipsTotal: money.sum(...days.map(d => d.tips)),
     info: { detected: Object.keys(mapping).sort(), skipped, netDerived: !('net' in mapping) }
   };
 }
