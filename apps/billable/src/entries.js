@@ -12,6 +12,7 @@
 const crypto = require('crypto');
 const { roundHours, activeSeconds, narrative, activityCode, truncate } = require('./billing');
 const { matterFor } = require('./store');
+const { feeCents, sumCents, centsToDollars } = require('./money');
 
 function entryId(session, ts) {
   return crypto.createHash('sha1').update(`${session}|${ts}`).digest('hex').slice(0, 12);
@@ -139,17 +140,13 @@ function applyOverride(entry, o, config) {
     entry.reviewed = false;
     entry.writeOff = false;
   }
-  entry.amount = entry.writeOff ? 0 : round2(entry.hours * (config.rate || 0));
+  entry.amount = entry.writeOff ? 0 : centsToDollars(feeCents(entry.hours, config.rate || 0));
   // AI usage cost pass-through is based on unrounded actual runtime, not
   // billed tenths — it's a disclosed expense, not a fee (ABA Op. 512).
   entry.aiCost =
     !entry.manual && (config.aiCostPerHour || 0) > 0 && !entry.writeOff
-      ? round2((entry.seconds / 3600) * config.aiCostPerHour)
+      ? centsToDollars(feeCents(entry.seconds / 3600, config.aiCostPerHour))
       : 0;
-}
-
-function round2(n) {
-  return Math.round(n * 100) / 100;
 }
 
 function filterEntries(entries, { from, to, client, matter } = {}) {
@@ -164,27 +161,27 @@ function filterEntries(entries, { from, to, client, matter } = {}) {
 
 function totals(entries) {
   let hours = 0;
-  let amount = 0;
   let steps = 0;
-  let aiCost = 0;
   let unreviewed = 0;
+  const amounts = [];
+  const aiCosts = [];
   for (const e of entries) {
     if (!e.writeOff) {
       hours += e.hours;
-      amount += e.amount;
+      amounts.push(e.amount);
     }
     steps += e.steps;
-    aiCost += e.aiCost || 0;
+    aiCosts.push(e.aiCost || 0);
     if (!e.reviewed) unreviewed++;
   }
   return {
     hours: Number(hours.toFixed(2)),
-    amount: round2(amount),
-    aiCost: round2(aiCost),
+    amount: centsToDollars(sumCents(...amounts)),
+    aiCost: centsToDollars(sumCents(...aiCosts)),
     steps,
     unreviewed,
     count: entries.length,
   };
 }
 
-module.exports = { buildEntries, filterEntries, totals, entryId, truncate };
+module.exports = { buildEntries, filterEntries, totals, entryId, truncate, applyOverride };

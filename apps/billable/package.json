@@ -8,10 +8,11 @@
     "billable": "bin/billable.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20.19"
   },
   "scripts": {
-    "test": "node test/run.js"
+    "test": "node test/run.js",
+    "pretest": "npm run build --workspace @elias/money --if-present"
   },
   "keywords": [
     "claude",
@@ -21,5 +22,8 @@
     "legal",
     "timekeeping"
   ],
-  "private": true
+  "private": true,
+  "dependencies": {
+    "@elias/money": "0.1.0"
+  }
 }

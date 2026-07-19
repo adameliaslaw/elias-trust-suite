@@ -11,7 +11,8 @@ const { execFileSync } = require('child_process');
 process.env.BILLABLE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'billable-test-'));
 
 const { roundHours, activeSeconds, narrative, classifyTool } = require('../src/billing');
-const { buildEntries, filterEntries, totals } = require('../src/entries');
+const { sumCents } = require('../src/money');
+const { buildEntries, filterEntries, totals, applyOverride } = require('../src/entries');
 const { eventFromHookPayload, installHooks } = require('../src/hooks');
 const store = require('../src/store');
 
@@ -61,6 +62,25 @@ test('generates attorney-style narratives', () => {
   assert.match(text, /re: fix the login bug\./);
   // singularization: 'inquiries' -> 'inquiry', not 'inquirie'
   assert.match(narrative({ tools: ['AskUserQuestion'], subject: 'x' }), /1 inquiry/);
+});
+
+test('money math is exact: no float64 fee or total drift', () => {
+  // 1.5h x $13.35 = $20.025 -> half-up $20.03. Float round2 gave $20.02.
+  const e = { writeOff: false, manual: false, hours: 1.5, seconds: 5400 };
+  applyOverride(e, null, { rate: 13.35, aiCostPerHour: 0 });
+  assert.equal(e.amount, 20.03);
+  // half-cent boundary: 0.5h x $4.21 = $2.105 -> $2.11
+  const e2 = { writeOff: false, manual: false, hours: 0.5, seconds: 1800 };
+  applyOverride(e2, null, { rate: 4.21, aiCostPerHour: 0 });
+  assert.equal(e2.amount, 2.11);
+  // totals accumulate in integer cents: 0.1+0.2 style drift impossible
+  const t = totals([{ amount: 0.1, aiCost: 0.06, hours: 0.1, steps: 1 },
+                    { amount: 0.2, aiCost: 0.06, hours: 0.1, steps: 1 }]);
+  assert.equal(t.amount, 0.3);
+  assert.equal(t.aiCost, 0.12);
+  // sumCents: LawPay/LEDES boundary never float-adds
+  assert.equal(sumCents(19.99, 0.01), 2000);
+  assert.equal(sumCents(0.1, 0.2), 30);
 });
 
 test('translates Claude Code hook payloads into ledger events', () => {
