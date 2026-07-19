@@ -717,6 +717,9 @@ test('config CLI masks secrets unless --reveal', () => {
   assert.match(run(['config', 'rate']), /\d/);
 });
 
+// --- tamper-evident audit chains (@elias/audit wiring) ---
+require('./audit.test.js')(test);
+
 process.on('exit', () => {
   console.log(`\n${passed} tests passed${process.exitCode ? ' (with failures)' : ''}`);
 });
