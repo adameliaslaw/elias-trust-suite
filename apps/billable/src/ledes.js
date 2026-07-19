@@ -4,6 +4,8 @@
 // Fee lines carry the UTBMS activity code; AI usage pass-through costs go
 // out as expense lines (E124 "Other") so they are disclosed, not buried.
 
+const { sumCents } = require('./money');
+
 const FIELDS = [
   'INVOICE_DATE',
   'INVOICE_NUMBER',
@@ -48,9 +50,11 @@ function ledesExport(entries, config, { invoiceNumber, invoiceDate, from, to, de
   const invDate = invoiceDate || end || start;
   const invNumber = invoiceNumber || `MP-${ledesDate(invDate) || 'DRAFT'}`;
 
-  let total = 0;
-  for (const e of billable) total += e.amount + (e.aiCost || 0);
-  total = total.toFixed(2);
+  // INVOICE_TOTAL must equal the sum of LINE_ITEM_TOTALs to the cent;
+  // accumulate in integer cents, never floats (LEDES validators check this).
+  let totalCents = 0;
+  for (const e of billable) totalCents += sumCents(e.amount, e.aiCost || 0);
+  const total = (totalCents / 100).toFixed(2);
 
   const lines = ['LEDES1998B[]', FIELDS.join('|') + '[]'];
   let n = 0;

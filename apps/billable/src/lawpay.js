@@ -18,6 +18,7 @@
 const crypto = require('crypto');
 const store = require('./store');
 const { totals } = require('./entries');
+const { sumCents } = require('./money');
 
 function classifyForBilling(entries, overrides) {
   const ready = [];
@@ -65,7 +66,9 @@ function buildPaymentRequest(entries, config, { from, to, email, description } =
   }
 
   const t = totals(ready);
-  const amountCents = Math.round((t.amount + t.aiCost) * 100);
+  // t.amount / t.aiCost are exact-cent dollars from totals(); sum in cents
+  // (never float-add money on the way to a payment link).
+  const amountCents = sumCents(t.amount, t.aiCost);
   const period = describePeriod(ready, { from, to });
   const desc =
     description ||
