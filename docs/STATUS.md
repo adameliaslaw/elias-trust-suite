@@ -1,7 +1,7 @@
 # Consolidation Status — elias-trust-suite
 
 > Living handoff document. **A new session should read this file first.**
-> Last updated: 2026-07-19 (money wired into books — PR #6; iolta money wiring is next)
+> Last updated: 2026-07-19 (money wired into ALL THREE apps — iolta PR #7; @elias/audit wiring is next)
 
 ## Product
 Trust / finance / accounting suite for a NJ law practice.
@@ -30,13 +30,13 @@ npm workspaces: `apps/*`, `packages/*`. Node 20.
   - Same bug filed upstream: Billable.ai#17
 
 ## ▶️ Next up — START HERE
-- [ ] Wire `@elias/money` into `apps/iolta` (books done — PR #6; use `apps/books/lib/money.js` bridge + `apps/billable/src/money.js` as patterns)
-- [ ] Wire apps to `@elias/audit`
+- [ ] Wire apps to `@elias/audit` (money wiring COMPLETE in all three apps — billable #5, books #6, iolta #7)
 
 ## After migrations
 - [x] `apps/billable` wired to `@elias/money` (PR #5, merged `b94517a`) — exact bigint-cents fees/totals in entries/lawpay/ledes; fixed half-cent undercharge (1.5h x $13.35 billed $20.02 -> $20.03); 28/28 green, CI green
 - [x] `apps/books` wired to `@elias/money` (PR #6, merged `de19b8e`) — exact bigint-cents everywhere: invoices (per-LINE half-up rounding), time entries, sales-tax splits, payroll engine/NACHA/deposits/filings, P&L/dashboard/aging/1099. Fixed active misbilling: 1.5h x $13.35 billed $20.02 -> $20.03; `round2(1.005)` gave $1.00 -> $1.01. 383 checks green (11 new exact-money regressions), CI green first run
-- [ ] Wire apps to `@elias/money` (kills float-cents bug class; iolta remaining)
+- [x] `apps/iolta` wired to `@elias/money` (PR #7, merged `9855311`) — typed ESM bridge `src/money.ts` (browser-safe: pure TS + bigint; all iolta ledger math is client-side, server.ts does none). Fixed residual half-cent class: `toCents(1.005)` 100 -> 101; `toCents(-1.005)` -100 -> -101 (sign-symmetric) — could false-positive/negative the zero-tolerance three-way reconciliation. Ledger filters now compare in exact cents (float-noise balances classify as zero). 16 new exact-money regressions (half-cent ties, float-noise self-heal, three-way identity); package renamed `react-example` -> `@elias/iolta`; `typecheck` script added so CI gates iolta types. 399 checks green, CI green, `vite build` green
+- [x] Wire apps to `@elias/money` (kills float-cents bug class; ALL THREE apps done)
 - [ ] Wire apps to `@elias/audit`
 - [ ] Archive-notice on quickbucks, IOLTA-Reconciliation, Billable.ai repos pointing here
 
@@ -47,6 +47,7 @@ npm workspaces: `apps/*`, `packages/*`. Node 20.
 - [ ] plaid-bill-tracker + Payroll: not yet scheduled for migration — decide if they join this suite later
 
 ## Known issues filed
+- IOLTA-Reconciliation#22 — toCents() half-cent mis-rounding (1.005 -> 100, -1.005 -> -100, sign-asymmetric); can false-positive/negative zero-tolerance three-way reconciliation; fixed here in PR #7, upstream optional
 - quickbucks#36 — P&L netProfit bug (fixed here; upstream optional)
 - quickbucks#38 — float money math actively misbills (1.5h x $13.35 -> $20.02; round2(1.005) -> $1.00); fixed here in PR #6, upstream optional
 - Billable.ai#17 — narrative singularization "1 inquirie" (fixed here; upstream optional)
