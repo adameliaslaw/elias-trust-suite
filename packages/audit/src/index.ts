@@ -1,5 +1,5 @@
-export { AuditLog, AuditIntegrityError, GENESIS_HASH } from './audit-log.js';
-export type { AuditEntry, AuditLogOptions, VerificationResult } from './audit-log.js';
+export { AuditLog, AuditIntegrityError, GENESIS_HASH, computeEntryHash } from './audit-log.js';
+export type { AuditEntry, AuditEntryBody, AuditLogOptions, VerificationResult } from './audit-log.js';
 export { AUDIT_EVENT_TYPES } from './events.js';
 export type {
   AuditEventPayloads,
