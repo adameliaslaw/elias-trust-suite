@@ -59,6 +59,8 @@ test('generates attorney-style narratives', () => {
   assert.match(text, /Reviewed and analyzed 2 files/);
   assert.match(text, /drafted and revised 1 document/);
   assert.match(text, /re: fix the login bug\./);
+  // singularization: 'inquiries' -> 'inquiry', not 'inquirie'
+  assert.match(narrative({ tools: ['AskUserQuestion'], subject: 'x' }), /1 inquiry/);
 });
 
 test('translates Claude Code hook payloads into ledger events', () => {

@@ -64,7 +64,7 @@ function narrative(entry) {
   const parts = [];
   for (const [key, n] of counts) {
     const [, verb, noun] = key.split('|');
-    parts.push(`${verb.toLowerCase()} ${n} ${n === 1 ? noun.replace(/s$/, '') : noun}`);
+    parts.push(`${verb.toLowerCase()} ${n} ${n === 1 ? noun.replace(/ies$/, 'y').replace(/s$/, '') : noun}`);
   }
   let text = parts.length
     ? parts.join('; ')
