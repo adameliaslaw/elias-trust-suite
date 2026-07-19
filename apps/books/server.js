@@ -737,7 +737,7 @@ route('DELETE', '/api/expenses/:id/receipt', (req, res, db, params) => {
   receipts.deleteReceipt(exp.receipt);
   delete exp.receipt;
   save(db);
-  sendJSON(res, 200, { ok: true });
+  sendJSON(res, 200, exp);
 });
 
 // -- banking --
@@ -1014,7 +1014,7 @@ route('POST', '/api/bank/transactions/:id/expense', async (req, res, db, params)
     vendor: String(b.vendor || t.name).trim(),
     category: b.category || 'Other',
     amount: round2(Math.abs(t.amount)),
-    paymentMethod: 'Bank transfer',
+    paymentMethod: b.paymentMethod || 'Bank transfer',
     notes: b.notes || `From bank feed: ${t.name}`,
     createdAt: todayISO()
   };
@@ -1884,7 +1884,7 @@ route('GET', '/api/dashboard', async (req, res, db) => {
   for (let i = 5; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-  }
+  });
   const monthly = months.map(m => ({ month: m, income: 0, expenses: 0 }));
   const byMonth = Object.fromEntries(monthly.map(x => [x.month, x]));
 
@@ -1960,7 +1960,7 @@ route('GET', '/api/reports/pnl', (req, res, db, params, query) => {
     totalIncome,
     expenses: Object.entries(expensesByCategory).map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount),
     totalExpenses,
-    netProfit: money.sub(totalExpenses, totalIncome)
+    netProfit: money.sub(totalIncome, totalExpenses)
   });
 });
 
