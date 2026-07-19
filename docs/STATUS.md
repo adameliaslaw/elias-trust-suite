@@ -1,7 +1,7 @@
 # Consolidation Status — elias-trust-suite
 
 > Living handoff document. **A new session should read this file first.**
-> Last updated: 2026-07-19 (billable done; CI green; money wired into billable)
+> Last updated: 2026-07-19 (money wired into books — PR #6; iolta money wiring is next)
 
 ## Product
 Trust / finance / accounting suite for a NJ law practice.
@@ -30,12 +30,13 @@ npm workspaces: `apps/*`, `packages/*`. Node 20.
   - Same bug filed upstream: Billable.ai#17
 
 ## ▶️ Next up — START HERE
-- [ ] Wire `@elias/money` into `apps/books` (largest float-cents surface), then `apps/iolta`
+- [ ] Wire `@elias/money` into `apps/iolta` (books done — PR #6; use `apps/books/lib/money.js` bridge + `apps/billable/src/money.js` as patterns)
 - [ ] Wire apps to `@elias/audit`
 
 ## After migrations
 - [x] `apps/billable` wired to `@elias/money` (PR #5, merged `b94517a`) — exact bigint-cents fees/totals in entries/lawpay/ledes; fixed half-cent undercharge (1.5h x $13.35 billed $20.02 -> $20.03); 28/28 green, CI green
-- [ ] Wire apps to `@elias/money` (kills float-cents bug class; books/iolta remaining)
+- [x] `apps/books` wired to `@elias/money` (PR #6, merged `de19b8e`) — exact bigint-cents everywhere: invoices (per-LINE half-up rounding), time entries, sales-tax splits, payroll engine/NACHA/deposits/filings, P&L/dashboard/aging/1099. Fixed active misbilling: 1.5h x $13.35 billed $20.02 -> $20.03; `round2(1.005)` gave $1.00 -> $1.01. 383 checks green (11 new exact-money regressions), CI green first run
+- [ ] Wire apps to `@elias/money` (kills float-cents bug class; iolta remaining)
 - [ ] Wire apps to `@elias/audit`
 - [ ] Archive-notice on quickbucks, IOLTA-Reconciliation, Billable.ai repos pointing here
 
@@ -47,6 +48,7 @@ npm workspaces: `apps/*`, `packages/*`. Node 20.
 
 ## Known issues filed
 - quickbucks#36 — P&L netProfit bug (fixed here; upstream optional)
+- quickbucks#38 — float money math actively misbills (1.5h x $13.35 -> $20.02; round2(1.005) -> $1.00); fixed here in PR #6, upstream optional
 - Billable.ai#17 — narrative singularization "1 inquirie" (fixed here; upstream optional)
 
 ## Verification environment notes (for sandbox test runs)
@@ -57,4 +59,5 @@ npm workspaces: `apps/*`, `packages/*`. Node 20.
 - `push_files` fails on payloads ≳100KB; `create_or_update_file` handles ~82KB fine — but prefer plain git push from sandbox w/ PAT (no size limit, byte-exact by construction)
 - `/mnt/agents/output` does NOT support symlinks — run `npm install` under /tmp
 - Sandbox network to github.com is flaky — retry git clone/push 2–3× in a loop
+- **Sandbox /tmp can be wiped BETWEEN turns** (happened 2026-07-19 mid-task, full rebuild needed): commit + push work-in-progress before ending a turn, and keep a patch backup under /mnt/agents/work
 - Dual-vite type clash in vite.config.ts = two vite copies (root-hoisted vs app-local). Fixed by vitest ^3 at root (vite 6 hoisted once)
