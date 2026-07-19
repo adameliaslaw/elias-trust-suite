@@ -280,9 +280,11 @@ export default function App() {
       const lower = ledgerSearchTerm.toLowerCase();
       result = result.filter(c => c.name.toLowerCase().includes(lower) || c.matterDescription?.toLowerCase().includes(lower));
     }
-    if (ledgerFilter === 'positive') result = result.filter(c => c.balance > 0);
-    if (ledgerFilter === 'negative') result = result.filter(c => c.balance < 0);
-    if (ledgerFilter === 'zero') result = result.filter(c => c.balance === 0);
+    // Compare in exact cents: legacy float-noise balances (e.g. 1e-14)
+    // must classify as zero, not positive/negative.
+    if (ledgerFilter === 'positive') result = result.filter(c => toCents(c.balance) > 0);
+    if (ledgerFilter === 'negative') result = result.filter(c => toCents(c.balance) < 0);
+    if (ledgerFilter === 'zero') result = result.filter(c => toCents(c.balance) === 0);
     return result;
   }, [clients, ledgerSearchTerm, ledgerFilter]);
 
