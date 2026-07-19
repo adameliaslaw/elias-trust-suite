@@ -1,6 +1,7 @@
 // Payroll business logic: employees, pay runs, YTD accumulation, tax
 // liabilities, and posting finalized runs into the books.
-const { uid, round2, todayISO } = require('../store');
+const { uid, todayISO } = require('../store');
+const money = require('../money');
 const engine = require('./engine');
 
 // ---------- employees ----------
@@ -102,14 +103,13 @@ function ytdTotals(db, employeeId, year, excludeRunId) {
     if (Number(run.payDate.slice(0, 4)) !== year) continue;
     for (const chk of run.checks) {
       if (chk.employeeId !== employeeId || !chk.computed) continue;
-      t.ssWages += chk.computed.ssTaxable;
-      t.medicareWages += chk.computed.medicareTaxable;
-      t.futaWages += chk.computed.futaTaxable;
-      t.njUiWages += chk.computed.njUiTaxable;
-      t.njTdiWages += chk.computed.njTdiTaxable;
+      t.ssWages = money.add(t.ssWages, chk.computed.ssTaxable);
+      t.medicareWages = money.add(t.medicareWages, chk.computed.medicareTaxable);
+      t.futaWages = money.add(t.futaWages, chk.computed.futaTaxable);
+      t.njUiWages = money.add(t.njUiWages, chk.computed.njUiTaxable);
+      t.njTdiWages = money.add(t.njTdiWages, chk.computed.njTdiTaxable);
     }
   }
-  for (const k of Object.keys(t)) t[k] = round2(t[k]);
   return t;
 }
 
@@ -168,12 +168,12 @@ function computeRun(db, run) {
   }
   const done = run.checks.filter(c => c.computed);
   run.totals = {
-    gross: round2(done.reduce((s, c) => s + c.computed.gross, 0)),
-    employeeTaxes: round2(done.reduce((s, c) => s + c.computed.employeeTaxes, 0)),
-    deductions: round2(done.reduce((s, c) => s + c.computed.totalDeductions, 0)),
-    reimbursements: round2(done.reduce((s, c) => s + c.computed.reimbursement, 0)),
-    net: round2(done.reduce((s, c) => s + c.computed.net, 0)),
-    erTotal: round2(done.reduce((s, c) => s + c.computed.erTotal, 0))
+    gross: money.sum(...done.map(c => c.computed.gross)),
+    employeeTaxes: money.sum(...done.map(c => c.computed.employeeTaxes)),
+    deductions: money.sum(...done.map(c => c.computed.totalDeductions)),
+    reimbursements: money.sum(...done.map(c => c.computed.reimbursement)),
+    net: money.sum(...done.map(c => c.computed.net)),
+    erTotal: money.sum(...done.map(c => c.computed.erTotal))
   };
   run.warnings = warnings;
   return run;
@@ -206,7 +206,7 @@ const LIABILITY_BUCKETS = {
   federal_941: {
     label: 'Federal — Form 941 (income tax + FICA)',
     payee: 'IRS (EFTPS 941 deposit)',
-    amount: c => c.fit + c.ss + c.medicare + c.erSs + c.erMedicare
+    amount: c => money.sum(c.fit, c.ss, c.medicare, c.erSs, c.erMedicare)
   },
   futa: {
     label: 'Federal — FUTA (Form 940)',
@@ -221,12 +221,12 @@ const LIABILITY_BUCKETS = {
   nj_dol: {
     label: 'NJ — UI/WF/SWF, TDI, FLI (employee + employer)',
     payee: 'NJ Department of Labor',
-    amount: c => c.njUiWf + c.njTdi + c.njFli + c.erNjUi + c.erNjTdi
+    amount: c => money.sum(c.njUiWf, c.njTdi, c.njFli, c.erNjUi, c.erNjTdi)
   },
   retirement_401k: {
     label: '401(k) deferrals to remit (DOL: within 7 business days)',
     payee: 'Retirement plan recordkeeper',
-    amount: c => c.dedPretax401k + c.dedRoth401k
+    amount: c => money.sum(c.dedPretax401k, c.dedRoth401k)
   }
 };
 
@@ -238,21 +238,21 @@ function liabilities(db) {
     for (const chk of run.checks) {
       if (!chk.computed) continue;
       for (const [key, bucket] of Object.entries(LIABILITY_BUCKETS)) {
-        accrued[key] += bucket.amount(chk.computed);
+        accrued[key] = money.add(accrued[key], bucket.amount(chk.computed));
       }
     }
   }
   const deposited = {};
   for (const d of db.payrollDeposits) {
-    deposited[d.bucket] = (deposited[d.bucket] || 0) + d.amount;
+    deposited[d.bucket] = money.add(deposited[d.bucket] || 0, d.amount);
   }
   return Object.entries(LIABILITY_BUCKETS).map(([key, bucket]) => ({
     bucket: key,
     label: bucket.label,
     payee: bucket.payee,
-    accrued: round2(accrued[key]),
-    deposited: round2(deposited[key] || 0),
-    balance: round2(accrued[key] - (deposited[key] || 0))
+    accrued: accrued[key],
+    deposited: deposited[key] || 0,
+    balance: money.sub(accrued[key], deposited[key] || 0)
   }));
 }
 

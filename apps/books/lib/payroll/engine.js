@@ -5,12 +5,17 @@
 // the Python engine ever disagree, those tests fail.
 //
 // Money convention: plain numbers, but every tax/wage figure is passed
-// through cents(), which snaps float noise (12 significant digits) before
-// rounding half-up to whole cents — matching Python's Decimal ROUND_HALF_UP.
+// through cents(), which snaps float noise (12 significant digits) and then
+// rounds EXACTLY half-up, away from zero, via @elias/money bigint cents —
+// matching Python's Decimal ROUND_HALF_UP. Products (rate x hours, wages x
+// rate) go through mul()/percentOf() so they are computed at full precision
+// and rounded once, never as float64.
 
 const TABLES_BY_YEAR = {
   2026: require('./tables2026')
 };
+
+const money = require('../money');
 
 function tablesForYear(year) {
   const t = TABLES_BY_YEAR[year];
@@ -34,7 +39,9 @@ function num(v) {
 function cents(v) {
   const n = num(v);
   if (n === 0) return 0;
-  return Math.round(Number((n * 100).toPrecision(12))) / 100;
+  // productCents snaps to 12 significant digits and rounds the exact
+  // decimal half-up (away from zero) — no float64 Math.round anywhere.
+  return money.productCents(n) / 100;
 }
 
 // Apply a [floor, taxAtFloor, marginalRate] bracket table.
@@ -99,7 +106,7 @@ function medicare(tables, periodWages, priorYtdWages) {
   const over = Math.max(prior + wages - threshold, 0) - Math.max(prior - threshold, 0);
   const additional = cents(over * tables.ADDITIONAL_MEDICARE_RATE);
   return {
-    employee: cents(baseTax + additional),
+    employee: money.sum(baseTax, additional),
     employer: baseTax,
     taxable: cents(wages),
     addlWages: cents(over)   // feeds Form 941 line 5d
@@ -164,8 +171,8 @@ function grossEarnings(employee, inputs, frequency) {
     overtime = 0;
   } else {
     const rate = num(employee.hourlyRate);
-    regular = rate * num(inputs.hours);
-    overtime = rate * 1.5 * num(inputs.otHours);
+    regular = money.mul(rate, num(inputs.hours));
+    overtime = money.mul(rate, 1.5, num(inputs.otHours));
   }
   return {
     regular: cents(regular), overtime: cents(overtime),
@@ -180,10 +187,10 @@ function deductionAmounts(deductions, gross) {
   const resolved = [];
   const totals = { pretax_health: 0, pretax_401k: 0, roth_401k: 0, aftertax: 0 };
   for (const d of deductions) {
-    let amount = d.amountType === 'percent' ? cents(gross * num(d.amount) / 100) : cents(d.amount);
+    let amount = d.amountType === 'percent' ? money.percentOf(gross, num(d.amount)) : cents(d.amount);
     amount = Math.min(amount, gross);  // never deduct more than the check
     resolved.push({ name: d.name, kind: d.kind, amount });
-    totals[d.kind] = cents(totals[d.kind] + amount);
+    totals[d.kind] = money.add(totals[d.kind], amount);
   }
   return { resolved, totals };
 }
@@ -206,7 +213,7 @@ function computePaycheck(year, employee, inputs, deductions, ytd, settings) {
   const frequency = employee.payFrequency;
 
   const { regular, overtime, bonus, tips } = grossEarnings(employee, inputs, frequency);
-  const gross = cents(regular + overtime + bonus + tips);
+  const gross = money.sum(regular, overtime, bonus, tips);
 
   const { resolved: dedList, totals: ded } = deductionAmounts(deductions, gross);
 
@@ -226,7 +233,7 @@ function computePaycheck(year, employee, inputs, deductions, ytd, settings) {
   // non-tip wages fill the wage-base cap first.
   const nonTipFica = Math.max(ficaWages - tips, 0);
   const ssWagesTaxable = Math.min(nonTipFica, ss.taxable);
-  const ssTipsTaxable = cents(ss.taxable - ssWagesTaxable);
+  const ssTipsTaxable = money.sub(ss.taxable, ssWagesTaxable);
   const med = medicare(tables, ficaWages, ytd.medicareWages);
   const fu = futa(tables, njBaseWages, ytd.futaWages);
 
@@ -235,10 +242,11 @@ function computePaycheck(year, employee, inputs, deductions, ytd, settings) {
   const njEr = njEmployerContributions(tables, njBaseWages, ytd.njUiWages,
     settings.njEmployerUiRate || 0, settings.njEmployerTdiRate || 0);
 
-  const employeeTaxes = cents(fit + ss.employee + med.employee + njSit + njEe.uiWf + njEe.tdi + njEe.fli);
-  const totalDeductions = cents(dedList.reduce((s, d) => s + d.amount, 0));
+  const employeeTaxes = money.sum(fit, ss.employee, med.employee, njSit, njEe.uiWf, njEe.tdi, njEe.fli);
+  const totalDeductions = money.sum(...dedList.map(d => d.amount));
   const reimbursement = cents(inputs.reimbursement);
-  const net = cents(gross - employeeTaxes - totalDeductions + reimbursement);
+  // net = gross - taxes - deductions + reimbursement, in exact cents
+  const net = money.sum(gross, -employeeTaxes, -totalDeductions, reimbursement);
 
   return {
     regular, overtime, bonus, tips, gross, reimbursement,
@@ -257,7 +265,7 @@ function computePaycheck(year, employee, inputs, deductions, ytd, settings) {
     totalDeductions, employeeTaxes, net,
     erSs: ss.employer, erMedicare: med.employer, erFuta: fu.tax,
     erNjUi: njEr.erUi, erNjTdi: njEr.erTdi,
-    erTotal: cents(ss.employer + med.employer + fu.tax + njEr.erUi + njEr.erTdi)
+    erTotal: money.sum(ss.employer, med.employer, fu.tax, njEr.erUi, njEr.erTdi)
   };
 }
 

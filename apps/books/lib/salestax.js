@@ -14,8 +14,8 @@
 //   here by the "monthly remitter" setting). Month 3 settles with the ST-50.
 // Due dates are not shifted for weekends/holidays — when that happens, pay early.
 
-const { decorateInvoice, round2 } = require('./store');
-const { cents } = require('./payroll/engine');
+const { decorateInvoice } = require('./store');
+const { round2, sum, sub, shareOf } = require('./money');
 
 const NJ_SALES_TAX_RATE = 6.625;        // statewide rate since 2018
 const NJ_UEZ_RATE = 3.3125;             // Urban Enterprise Zone half rate
@@ -37,27 +37,28 @@ function paymentIncomeParts(decoratedInv, payment) {
   if (!(decoratedInv.tax > 0) || !(decoratedInv.total > 0)) {
     return { income: round2(amount), tax: 0 };
   }
-  const tax = cents(amount * decoratedInv.tax / decoratedInv.total);
-  return { income: round2(amount - tax), tax };
+  // Proportional split in exact integer cents — no float ratio.
+  const tax = shareOf(amount, decoratedInv.tax, decoratedInv.total);
+  return { income: sub(amount, tax), tax };
 }
 
 function collectedInRange(db, from, to) {
-  let sum = 0;
+  const parts = [];
   for (const inv of db.invoices) {
     const d = decorateInvoice(inv);
     if (!(d.tax > 0)) continue;
     for (const p of inv.payments || []) {
-      if (p.date >= from && p.date <= to) sum += paymentIncomeParts(d, p).tax;
+      if (p.date >= from && p.date <= to) parts.push(paymentIncomeParts(d, p).tax);
     }
   }
-  return round2(sum);
+  return sum(...parts);
 }
 
 function remittedFor(db, keys) {
   const set = new Set(Array.isArray(keys) ? keys : [keys]);
-  return round2((db.salesTaxRemittances || [])
+  return sum(...(db.salesTaxRemittances || [])
     .filter(r => set.has(r.periodKey))
-    .reduce((s, r) => s + r.amount, 0));
+    .map(r => r.amount));
 }
 
 function iso(y, m, d) {
@@ -95,7 +96,7 @@ function schedule(db, year, cfg, todayIso) {
         due: due20thFollowing(year, m),
         collected, remitted,
         required: collected > ST51_MONTHLY_THRESHOLD,
-        outstanding: collected > ST51_MONTHLY_THRESHOLD ? round2(Math.max(collected - remitted, 0)) : 0
+        outstanding: collected > ST51_MONTHLY_THRESHOLD ? Math.max(sub(collected, remitted), 0) : 0
       });
     }
     const qKey = `${year}-Q${q}`;
@@ -107,7 +108,7 @@ function schedule(db, year, cfg, todayIso) {
       collected: qCollected,
       remitted: remittedAll,
       required: qCollected > 0,
-      outstanding: round2(Math.max(qCollected - remittedAll, 0))
+      outstanding: Math.max(sub(qCollected, remittedAll), 0)
     });
   }
   return entries;
@@ -116,15 +117,15 @@ function schedule(db, year, cfg, todayIso) {
 function summary(db, year, cfg, todayIso) {
   const entries = schedule(db, year, cfg, todayIso);
   const collected = collectedInRange(db, `${year}-01-01`, `${year}-12-31`);
-  const remitted = round2((db.salesTaxRemittances || [])
+  const remitted = sum(...(db.salesTaxRemittances || [])
     .filter(r => r.periodKey.startsWith(String(year)))
-    .reduce((s, r) => s + r.amount, 0));
+    .map(r => r.amount));
   return {
     year,
     settings: cfg,
     collected,
     remitted,
-    balance: round2(collected - remitted),
+    balance: sub(collected, remitted),
     schedule: entries
   };
 }

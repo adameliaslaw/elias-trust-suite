@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { loadGlobal, saveGlobal, DATA_DIR } = require('./global');
+const { round2, mul, percentOf, sum, add, sub } = require('./money');
 
 const FILE_KEY = Symbol('dbFile');
 const dbs = new Map();   // companyId -> db object
@@ -136,30 +137,30 @@ function save(db) {
 
 // ---- Derived invoice fields ----
 
+// Per-line amounts: qty x rate rounded half-up per LINE (the number the
+// client sees on the invoice), then summed in exact integer cents.
+function lineAmount(it) {
+  return mul(Number(it.rate) || 0, Number(it.qty) || 0);
+}
+
 function invoiceSubtotal(inv) {
-  return round2((inv.items || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.rate) || 0), 0));
+  return sum(...(inv.items || []).map(lineAmount));
 }
 
 // Sales tax on the invoice's taxable lines at the invoice's snapshot rate.
 function invoiceTax(inv) {
   const rate = Number(inv.taxRate) || 0;
   if (!(rate > 0)) return 0;
-  const taxableBase = (inv.items || [])
-    .filter(it => it.taxable)
-    .reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.rate) || 0), 0);
-  return round2(taxableBase * rate / 100);
+  const taxableBase = sum(...(inv.items || []).filter(it => it.taxable).map(lineAmount));
+  return percentOf(taxableBase, rate);
 }
 
 function invoiceTotal(inv) {
-  return round2(invoiceSubtotal(inv) + invoiceTax(inv));
+  return add(invoiceSubtotal(inv), invoiceTax(inv));
 }
 
 function invoicePaid(inv) {
-  return round2((inv.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0));
-}
-
-function round2(n) {
-  return Math.round(n * 100) / 100;
+  return sum(...(inv.payments || []).map(p => Number(p.amount) || 0));
 }
 
 function todayISO() {
@@ -180,7 +181,7 @@ function invoiceStatus(inv) {
 function decorateInvoice(inv) {
   const subtotal = invoiceSubtotal(inv);
   const tax = invoiceTax(inv);
-  const total = round2(subtotal + tax);
+  const total = add(subtotal, tax);
   const paid = invoicePaid(inv);
   return {
     ...inv,
@@ -188,7 +189,7 @@ function decorateInvoice(inv) {
     tax,
     total,
     amountPaid: paid,
-    balance: round2(total - paid),
+    balance: sub(total, paid),
     status: invoiceStatus(inv)
   };
 }

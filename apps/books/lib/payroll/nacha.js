@@ -46,8 +46,12 @@ function num(value, width) {
   return digits.slice(0, width).padStart(width, '0');
 }
 
+// Amount fields are whole cents, right-padded — exact conversion via
+// @elias/money, never a float x100.
+const money = require('../money');
+
 function amountCents(amount) {
-  return Math.round(Number((Number(amount) * 100).toPrecision(12)));
+  return money.centsInt(amount);
 }
 
 function routingCheckDigit(routing8) {

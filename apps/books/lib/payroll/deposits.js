@@ -21,7 +21,7 @@
 //
 // NJ UI/TDI/FLI contributions (employee + employer): due with the NJ-927.
 
-const { cents } = require('./engine');
+const money = require('../money');
 
 const FED_NEXT_DAY_THRESHOLD = 100000;
 const FUTA_DEPOSIT_THRESHOLD = 500;
@@ -99,7 +99,7 @@ function finalizedChecks(db, year, quarter) {
 
 // 941 deposit liability for one paycheck: FIT + all four FICA halves.
 function federalLiabilityOf(c) {
-  return c.fit + c.ss + c.erSs + c.medicare + c.erMedicare;
+  return money.sum(c.fit, c.ss, c.erSs, c.medicare, c.erMedicare);
 }
 
 function federalLiabilities(db, year, schedule) {
@@ -124,15 +124,14 @@ function federalLiabilities(db, year, schedule) {
       });
     }
     const g = groups.get(key);
-    g.amount += federalLiabilityOf(c);
-    g.fit += c.fit;
-    g.ss += c.ss + c.erSs;
-    g.medicare += c.medicare + c.erMedicare;
+    g.amount = money.add(g.amount, federalLiabilityOf(c));
+    g.fit = money.add(g.fit, c.fit);
+    g.ss = money.add(g.ss, c.ss, c.erSs);
+    g.medicare = money.add(g.medicare, c.medicare, c.erMedicare);
   }
   return [...groups.values()].sort((a, b) => a.key.localeCompare(b.key)).map(g => ({
     ...g,
-    amount: cents(g.amount), fit: cents(g.fit), ss: cents(g.ss), medicare: cents(g.medicare),
-    nextDayRule: cents(g.amount) >= FED_NEXT_DAY_THRESHOLD
+    nextDayRule: g.amount >= FED_NEXT_DAY_THRESHOLD
   }));
 }
 
@@ -167,10 +166,9 @@ function njGitLiabilities(db, year, payerType) {
       periodEnd = quarterEnd(year, q);
     }
     if (!groups.has(key)) groups.set(key, { key, label, due, periodEnd, amount: 0 });
-    groups.get(key).amount += c.njSit;
+    groups.get(key).amount = money.add(groups.get(key).amount, c.njSit);
   }
   return [...groups.values()].sort((a, b) => a.key.localeCompare(b.key))
-    .map(g => ({ ...g, amount: cents(g.amount) }))
     .filter(g => g.amount > 0);
 }
 
@@ -178,14 +176,13 @@ function njGitLiabilities(db, year, payerType) {
 function nj927Contributions(db, year, quarter) {
   const parts = { eeUiWf: 0, eeTdi: 0, eeFli: 0, erUi: 0, erTdi: 0 };
   for (const { c } of finalizedChecks(db, year, quarter)) {
-    parts.eeUiWf += c.njUiWf;
-    parts.eeTdi += c.njTdi;
-    parts.eeFli += c.njFli;
-    parts.erUi += c.erNjUi;
-    parts.erTdi += c.erNjTdi;
+    parts.eeUiWf = money.add(parts.eeUiWf, c.njUiWf);
+    parts.eeTdi = money.add(parts.eeTdi, c.njTdi);
+    parts.eeFli = money.add(parts.eeFli, c.njFli);
+    parts.erUi = money.add(parts.erUi, c.erNjUi);
+    parts.erTdi = money.add(parts.erTdi, c.erNjTdi);
   }
-  for (const k of Object.keys(parts)) parts[k] = cents(parts[k]);
-  const amount = cents(parts.eeUiWf + parts.eeTdi + parts.eeFli + parts.erUi + parts.erTdi);
+  const amount = money.sum(parts.eeUiWf, parts.eeTdi, parts.eeFli, parts.erUi, parts.erTdi);
   return {
     key: `${year}-Q${quarter}`,
     label: `NJ-927 contributions Q${quarter} ${year}`,
@@ -201,8 +198,8 @@ function futaLiabilities(db, year, todayIso) {
   let carried = 0;
   const today = todayIso || new Date().toISOString().slice(0, 10);
   for (const q of [1, 2, 3, 4]) {
-    const liability = cents(finalizedChecks(db, year, q).reduce((s, { c }) => s + c.erFuta, 0));
-    const accumulated = cents(carried + liability);
+    const liability = money.sum(...finalizedChecks(db, year, q).map(({ c }) => c.erFuta));
+    const accumulated = money.add(carried, liability);
     const end = quarterEnd(year, q);
     const due = q === 4 ? iso(year + 1, 1, 31) : monthEnd(year, q * 3 + 1);
     const depositRequired = accumulated > FUTA_DEPOSIT_THRESHOLD;
@@ -222,9 +219,9 @@ function futaLiabilities(db, year, todayIso) {
 
 // Payments recorded against a specific obligation (bucket + periodKey).
 function paidFor(db, bucket, periodKey) {
-  return cents(db.payrollDeposits
+  return money.sum(...db.payrollDeposits
     .filter(d => d.bucket === bucket && d.periodKey === periodKey)
-    .reduce((s, d) => s + d.amount, 0));
+    .map(d => d.amount));
 }
 
 module.exports = {
