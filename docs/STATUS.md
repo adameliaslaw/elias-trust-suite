@@ -1,7 +1,7 @@
 # Consolidation Status — elias-trust-suite
 
 > Living handoff document. **A new session should read this file first.**
-> Last updated: 2026-07-19 (billable done; CI green; repo public)
+> Last updated: 2026-07-19 (billable done; CI green; money wired into billable)
 
 ## Product
 Trust / finance / accounting suite for a NJ law practice.
@@ -30,10 +30,12 @@ npm workspaces: `apps/*`, `packages/*`. Node 20.
   - Same bug filed upstream: Billable.ai#17
 
 ## ▶️ Next up — START HERE
-- [ ] Wire apps to `@elias/money` and `@elias/audit` (see "After migrations") — all planned app migrations are done
+- [ ] Wire `@elias/money` into `apps/books` (largest float-cents surface), then `apps/iolta`
+- [ ] Wire apps to `@elias/audit`
 
 ## After migrations
-- [ ] Wire apps to `@elias/money` (kills float-cents bug class; books/iolta/billable)
+- [x] `apps/billable` wired to `@elias/money` (PR #5, merged `b94517a`) — exact bigint-cents fees/totals in entries/lawpay/ledes; fixed half-cent undercharge (1.5h x $13.35 billed $20.02 -> $20.03); 28/28 green, CI green
+- [ ] Wire apps to `@elias/money` (kills float-cents bug class; books/iolta remaining)
 - [ ] Wire apps to `@elias/audit`
 - [ ] Archive-notice on quickbucks, IOLTA-Reconciliation, Billable.ai repos pointing here
 
