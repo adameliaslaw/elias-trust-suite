@@ -1,7 +1,7 @@
 # Consolidation Status — elias-trust-suite
 
 > Living handoff document. **A new session should read this file first.**
-> Last updated: 2026-07-19 (billable migration complete)
+> Last updated: 2026-07-19 (billable done; CI live; repo public)
 
 ## Product
 Trust / finance / accounting suite for a NJ law practice.
@@ -38,7 +38,7 @@ npm workspaces: `apps/*`, `packages/*`. Node 20.
 - [ ] Archive-notice on quickbucks, IOLTA-Reconciliation, Billable.ai repos pointing here
 
 ## ⛔ Blocked on owner
-- [ ] Move `ci.yml` → `.github/workflows/ci.yml` (agent token lacks `workflow` scope; drag in web UI or push locally)
+- [x] ~~ci.yml → `.github/workflows/ci.yml`~~ DONE (owner created via web UI `3a7ed99`; repo now **public** → Actions free; lockfile fix `ecf2970`)
 - [ ] plaid-bill-tracker: rotate Plaid credentials + purge git history (creds were committed)
 - [ ] Payroll: set `PAYROLL_ENCRYPTION_KEY` (merged PR #24 added AES-256-GCM at rest)
 - [ ] plaid-bill-tracker + Payroll: not yet scheduled for migration — decide if they join this suite later
