@@ -1,7 +1,7 @@
 # Consolidation Status — elias-trust-suite
 
 > Living handoff document. **A new session should read this file first.**
-> Last updated: 2026-07-19
+> Last updated: 2026-07-19 (billable migration complete)
 
 ## Product
 Trust / finance / accounting suite for a NJ law practice.
@@ -22,10 +22,15 @@ npm workspaces: `apps/*`, `packages/*`. Node 20.
   - Integration fixes (commit 2 of PR): dropped duplicate `vite` dep in app; root vitest ^2→^3 (vitest 2 pinned vite 5 → dual-vite type clash in vite.config.ts)
   - Follow-up: rename package `react-example` → `@elias/iolta`; bundle is 1.2MB — code-splitting candidate
 
+- [x] `apps/billable` ← Billable.ai (PR #4, merged `2971284`)
+  - Migration verified byte-exact (26/26 blob SHAs, source @ `0cfde67` incl. security PR #16)
+  - Integration: package renamed `matterproof` → `@elias/billable`, marked private
+  - Full monorepo suite green: billable 27/27, books 372/372, money 22/22, audit 15/15; typecheck clean
+  - Fixed during migration: narrative singularization "1 inquirie" → "1 inquiry" (+ regression test)
+  - Same bug filed upstream: Billable.ai#17
+
 ## ▶️ Next up — START HERE
-- [ ] `apps/billable` ← Billable.ai (merged security PR #16)
-  - Playbook (proven 3×): inventory files w/ blob SHAs → place files via git (sandbox PAT works; see below) → verify byte-exact via blob SHAs → install + typecheck + test suite in sandbox → squash-merge PR → file upstream issues for any bugs found
-  - PAT note: fine-grained PAT w/ Contents R/W on select repos works from sandbox git; verify with `curl -H "Authorization: Bearer $T" api.github.com/repos/owner/repo` (404 = no repo access)
+- [ ] Wire apps to `@elias/money` and `@elias/audit` (see "After migrations") — all planned app migrations are done
 
 ## After migrations
 - [ ] Wire apps to `@elias/money` (kills float-cents bug class; books/iolta/billable)
@@ -40,6 +45,7 @@ npm workspaces: `apps/*`, `packages/*`. Node 20.
 
 ## Known issues filed
 - quickbucks#36 — P&L netProfit bug (fixed here; upstream optional)
+- Billable.ai#17 — narrative singularization "1 inquirie" (fixed here; upstream optional)
 
 ## Verification environment notes (for sandbox test runs)
 - Raw download_url tokens expire in ~1–2 min — fetch fresh via MCP `get_file_contents` and curl immediately, or fetch content via MCP directly
