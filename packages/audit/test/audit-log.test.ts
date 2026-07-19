@@ -83,6 +83,23 @@ describe('append + chain structure', () => {
       'user-4',
     ]);
   });
+
+  it('serializes concurrent append() calls — no self-fork', async () => {
+    // Regression: two append() calls racing between tail-read and tail-push
+    // used to seal the same seq/prevHash twice, forking the chain (found via
+    // books' post-response Layer A append racing the next request's event).
+    const log = await AuditLog.open(new InMemoryStorage(), { clock: fixedClock() });
+    const pending = [];
+    for (let i = 0; i < 20; i += 1) {
+      pending.push(log.append('auth.login_failed', { principal: `racer-${i}`, reason: 'bad_password' }));
+    }
+    const sealed = await Promise.all(pending);
+    expect(sealed.map((e) => e.seq)).toEqual([...Array(20).keys()]);
+    const hashes = new Set(sealed.map((e) => e.hash));
+    expect(hashes.size).toBe(20);
+    const result = await log.verify();
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe('verify()', () => {
