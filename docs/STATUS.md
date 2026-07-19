@@ -1,7 +1,7 @@
 # Consolidation Status — elias-trust-suite
 
 > Living handoff document. **A new session should read this file first.**
-> Last updated: 2026-07-19 (billable done; CI live; repo public)
+> Last updated: 2026-07-19 (billable done; CI green; repo public)
 
 ## Product
 Trust / finance / accounting suite for a NJ law practice.
@@ -48,6 +48,8 @@ npm workspaces: `apps/*`, `packages/*`. Node 20.
 - Billable.ai#17 — narrative singularization "1 inquirie" (fixed here; upstream optional)
 
 ## Verification environment notes (for sandbox test runs)
+- **Lockfile mirror poison (bit us 2026-07-19):** sandbox npm rewrites `resolved` URLs in package-lock.json to its internal mirror (`npm.mirrors.msh.team`). Any lockfile regenerated in the sandbox MUST have URLs rewritten back to `https://registry.npmjs.org/` before commit, or CI fails with ENOTFOUND (npm 10 masks it as "Exit handler never called"; npm 11 shows the real error). Verify: `grep -c msh.team package-lock.json` must be 0.
+- CI: `.github/workflows/ci.yml` on Node 24 / npm 11 (Node 20's npm 10 has the masking bug above). First green run: `e7f1d8e`.
 - Raw download_url tokens expire in ~1–2 min — fetch fresh via MCP `get_file_contents` and curl immediately, or fetch content via MCP directly
 - Binary files (icons/PNGs) not fetchable via MCP — use placeholder + note; they ARE correct in the repo (user pushed via git)
 - `push_files` fails on payloads ≳100KB; `create_or_update_file` handles ~82KB fine — but prefer plain git push from sandbox w/ PAT (no size limit, byte-exact by construction)
