@@ -1,0 +1,72 @@
+{
+  "entities": {
+    "Client": {
+      "title": "Client",
+      "description": "A client for whom trust funds are held.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "The full name of the client." },
+        "matterDescription": { "type": "string", "description": "A brief description of the legal matter." },
+        "balance": { "type": "number", "description": "The current balance held in trust for this client." }
+      },
+      "required": ["name"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "A receipt or disbursement in the IOLTA account.",
+      "type": "object",
+      "properties": {
+        "clientId": { "type": "string", "description": "Reference to the Client entity." },
+        "clientName": { "type": "string", "description": "Denormalized client name for sorting." },
+        "date": { "type": "string", "format": "date", "description": "The date of the transaction (issue date for checks)." },
+        "clearDate": { "type": "string", "format": "date", "description": "The date the transaction cleared the bank." },
+        "amount": { "type": "number", "description": "The transaction amount (positive for receipts, negative for disbursements)." },
+        "type": { "type": "string", "enum": ["receipt", "disbursement"], "description": "The type of transaction." },
+        "checkNumber": { "type": "string", "description": "The check number for disbursements." },
+        "description": { "type": "string", "description": "A description of the transaction." },
+        "month": { "type": "string", "description": "The reconciliation month (YYYY-MM)." }
+      },
+      "required": ["date", "amount", "type", "month"]
+    },
+    "Reconciliation": {
+      "title": "Reconciliation",
+      "description": "A monthly three-way reconciliation report.",
+      "type": "object",
+      "properties": {
+        "month": { "type": "string", "description": "The reconciliation month (YYYY-MM)." },
+        "bankBalance": { "type": "number", "description": "The balance per the bank statement." },
+        "bookBalance": { "type": "number", "description": "The balance per the firm's books (ledger)." },
+        "clientBalanceTotal": { "type": "number", "description": "The total of all individual client ledger balances." },
+        "isReconciled": { "type": "boolean", "description": "Whether the three balances match." }
+      },
+      "required": ["month", "bankBalance", "bookBalance", "clientBalanceTotal"]
+    },
+    "StatementBalance": {
+      "title": "Statement Balance",
+      "description": "The ending balance from the bank statement for a specific month.",
+      "type": "object",
+      "properties": {
+        "balance": { "type": "number", "description": "The ending balance." }
+      },
+      "required": ["balance"]
+    }
+  },
+  "firestore": {
+    "/clients/{clientId}": {
+      "schema": "Client",
+      "description": "Collection of clients."
+    },
+    "/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Collection of all IOLTA transactions."
+    },
+    "/reconciliations/{month}": {
+      "schema": "Reconciliation",
+      "description": "Monthly reconciliation records."
+    },
+    "/statementBalances/{month}": {
+      "schema": "StatementBalance",
+      "description": "Collection of monthly bank statement balances."
+    }
+  }
+}
