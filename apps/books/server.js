@@ -1884,7 +1884,7 @@ route('GET', '/api/dashboard', async (req, res, db) => {
   for (let i = 5; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-  });
+  }
   const monthly = months.map(m => ({ month: m, income: 0, expenses: 0 }));
   const byMonth = Object.fromEntries(monthly.map(x => [x.month, x]));
 
