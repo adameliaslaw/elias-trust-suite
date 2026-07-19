@@ -6,6 +6,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const audit = require('./audit');
 
 // Everything under the home directory is client-confidential, and
 // config.json holds API keys and OAuth tokens: write files owner-only and
@@ -35,6 +36,10 @@ function configPath() {
 
 function overridesPath() {
   return path.join(homeDir(), 'overrides.json');
+}
+
+function auditPath() {
+  return path.join(homeDir(), 'audit.jsonl');
 }
 
 const DEFAULT_CONFIG = {
@@ -68,14 +73,29 @@ function readConfig() {
 
 function writeConfig(config) {
   ensureHome();
+  // Chain which keys changed (keys only — config holds API keys and OAuth
+  // tokens, values must never reach the audit trail).
+  let prev = {};
+  try { prev = JSON.parse(fs.readFileSync(configPath(), 'utf8')); } catch { /* first write */ }
+  const changed = [...new Set([...Object.keys(prev), ...Object.keys(config)])]
+    .filter(k => JSON.stringify(prev[k]) !== JSON.stringify(config[k]));
   fs.writeFileSync(configPath(), JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
   tightenPerms(configPath());
+  if (changed.length) {
+    audit.appendSemantic(auditPath(), ledgerPath(), 'config.changed', { keys: changed.sort(), actor: 'local' });
+  }
 }
 
 function appendEvent(event) {
   ensureHome();
-  fs.appendFileSync(ledgerPath(), JSON.stringify(event) + '\n', { mode: 0o600 });
+  // Stamped with chain fields (seq/prevHash/hash) under a lockfile so
+  // concurrent hook processes serialize instead of forking the chain.
+  const { firstChainedWithLegacy } = audit.appendStampedEvent(ledgerPath(), event);
   tightenPerms(ledgerPath());
+  if (firstChainedWithLegacy) {
+    // Bind the pre-chain events before anything else touches the semantic log.
+    audit.ensureLegacyAnchor(ledgerPath(), auditPath());
+  }
 }
 
 function readEvents() {
@@ -111,10 +131,27 @@ function readOverrides() {
 
 function writeOverride(id, patch) {
   const all = readOverrides();
-  all[id] = { ...all[id], ...patch };
+  const prev = all[id] || {};
+  all[id] = { ...prev, ...patch };
   ensureHome();
   fs.writeFileSync(overridesPath(), JSON.stringify(all, null, 2) + '\n', { mode: 0o600 });
   tightenPerms(overridesPath());
+  // Attorney edits to evidence-grade entries are the highest tamper
+  // incentive in the app — every one is chained with before/after context.
+  // Integration stamps (clioId, lawpayRef) get their own event types.
+  if ('clioId' in patch) {
+    audit.appendSemantic(auditPath(), ledgerPath(), 'clio.entry_synced', {
+      entryId: id, clioId: String(patch.clioId), actor: 'local'
+    });
+  } else if (!('lawpayRef' in patch && Object.keys(patch).length === 1)) {
+    const payload = { entryId: id, fields: Object.keys(patch).sort(), actor: 'local' };
+    if ('hours' in patch) {
+      if (prev.hours !== undefined) payload.hoursBefore = String(prev.hours);
+      payload.hoursAfter = String(patch.hours);
+    }
+    if ('writeOff' in patch) payload.writeOff = !!patch.writeOff;
+    audit.appendSemantic(auditPath(), ledgerPath(), 'entry.override_written', payload);
+  }
   return all[id];
 }
 
@@ -142,6 +179,7 @@ module.exports = {
   ledgerPath,
   configPath,
   overridesPath,
+  auditPath,
   DEFAULT_CONFIG,
   readConfig,
   writeConfig,

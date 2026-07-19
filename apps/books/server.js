@@ -25,6 +25,7 @@ const timecards = require('./lib/payroll/timecards');
 const salesimport = require('./lib/salesimport');
 const receipts = require('./lib/receipts');
 const backup = require('./lib/backup');
+const audit = require('./lib/audit');
 
 const PORT = process.env.PORT || 3000;
 // Bind to loopback by default: the app is built for a single machine (or a
@@ -134,6 +135,10 @@ route('POST', '/api/login', async (req, res) => {
   if (!g.passwordHash) return badRequest(res, 'No password is set');
   if (!auth.verifyPassword(String(b.password || ''), g.passwordHash)) {
     auth.recordLoginFail(req);
+    // Chained: brute-force bursts must be visible in the tamper-evident log.
+    await audit.append(req.companyId, 'auth.login_failed', {
+      principal: 'local', reason: 'bad_password', ip: audit.actor(req).slice(6)
+    });
     return sendJSON(res, 401, { error: 'Incorrect password' });
   }
   auth.resetLoginFails(req);
@@ -166,6 +171,7 @@ route('POST', '/api/password', async (req, res) => {
   auth.clearSessions();
   const token = auth.createSession();
   res.setHeader('Set-Cookie', `qb_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`);
+  await audit.append(req.companyId, 'auth.password_changed', { principal: 'local' });
   sendJSON(res, 200, { ok: true, protected: !!g.passwordHash });
 });
 
@@ -208,6 +214,10 @@ route('PUT', '/api/settings', async (req, res, db) => {
     };
   }
   save(db);
+  // Keys only — values can carry secrets; which knob turned cannot.
+  await audit.append(req.companyId, 'settings.changed', {
+    keys: Object.keys(b), actor: audit.actor(req)
+  });
   // Keep the household company registry in sync with the display name.
   if ('companyName' in b) {
     const reg = companies().find(c => c.id === req.companyId);
@@ -269,8 +279,8 @@ route('DELETE', '/api/customers/:id', (req, res, db, params) => {
 });
 
 // -- invoices --
-route('GET', '/api/invoices', (req, res, db) => {
-  generateRecurring(db);
+route('GET', '/api/invoices', async (req, res, db) => {
+  await generateRecurring(db, req);
   const list = db.invoices.map(inv => {
     const c = db.customers.find(x => x.id === inv.customerId);
     return { ...decorateInvoice(inv), customerName: c ? (c.company || c.name) : '(deleted)' };
@@ -310,9 +320,19 @@ function createInvoice(db, b) {
 }
 
 // Materialize any due recurring invoices before reads that show them.
-function generateRecurring(db) {
+// Generated invoices are money events: they are chained like manual ones.
+async function generateRecurring(db, req) {
   const created = recurring.generateDue(db, createInvoice, todayISO());
-  if (created.length) save(db);
+  if (created.length) {
+    save(db);
+    for (const inv of created) {
+      await audit.append(req.companyId, 'invoice.created', {
+        invoiceId: inv.id, clientId: inv.customerId,
+        totalCents: audit.centsStr(decorateInvoice(inv).total),
+        source: 'recurring', actor: audit.actor(req)
+      });
+    }
+  }
   return created;
 }
 
@@ -325,6 +345,11 @@ route('POST', '/api/invoices', async (req, res, db) => {
     return badRequest(res, e.message);
   }
   save(db);
+  await audit.append(req.companyId, 'invoice.created', {
+    invoiceId: inv.id, clientId: inv.customerId,
+    totalCents: audit.centsStr(decorateInvoice(inv).total),
+    source: 'manual', actor: audit.actor(req)
+  });
   sendJSON(res, 201, decorateInvoice(inv));
 });
 route('PUT', '/api/invoices/:id', async (req, res, db, params) => {
@@ -341,15 +366,24 @@ route('PUT', '/api/invoices/:id', async (req, res, db, params) => {
     inv.taxRate = inv.items.some(it => it.taxable) ? (inv.taxRate || salestax.salesTaxSettings(db).ratePct) : 0;
   }
   save(db);
+  await audit.append(req.companyId, 'invoice.updated', {
+    invoiceId: inv.id, totalCents: audit.centsStr(decorateInvoice(inv).total),
+    changedFields: Object.keys(b), actor: audit.actor(req)
+  });
   sendJSON(res, 200, decorateInvoice(inv));
 });
-route('DELETE', '/api/invoices/:id', (req, res, db, params) => {
+route('DELETE', '/api/invoices/:id', async (req, res, db, params) => {
   const idx = db.invoices.findIndex(x => x.id === params.id);
   if (idx === -1) return notFound(res);
+  // Snapshot the total BEFORE removal — the chain is the record of what was deleted.
+  const deletedTotal = decorateInvoice(db.invoices[idx]).total;
   db.invoices.splice(idx, 1);
   // Release any time entries billed on this invoice back to unbilled WIP.
   for (const t of db.timeEntries) if (t.invoiceId === params.id) t.invoiceId = null;
   save(db);
+  await audit.append(req.companyId, 'invoice.deleted', {
+    invoiceId: params.id, totalCents: audit.centsStr(deletedTotal), actor: audit.actor(req)
+  });
   sendJSON(res, 200, { ok: true });
 });
 route('POST', '/api/invoices/:id/payments', async (req, res, db, params) => {
@@ -363,13 +397,22 @@ route('POST', '/api/invoices/:id/payments', async (req, res, db, params) => {
   inv.payments.push({ id: uid(), date: b.date || todayISO(), amount: round2(amount), method: b.method || 'Other' });
   inv.draft = false;
   save(db);
+  await audit.append(req.companyId, 'invoice.payment_recorded', {
+    invoiceId: inv.id, paymentCents: audit.centsStr(amount), actor: audit.actor(req)
+  });
   sendJSON(res, 200, decorateInvoice(inv));
 });
-route('POST', '/api/invoices/:id/send', (req, res, db, params) => {
+route('POST', '/api/invoices/:id/send', async (req, res, db, params) => {
   const inv = db.invoices.find(x => x.id === params.id);
   if (!inv) return notFound(res);
   inv.draft = false;
   save(db);
+  const customer = db.customers.find(c => c.id === inv.customerId);
+  await audit.append(req.companyId, 'invoice.sent', {
+    invoiceId: inv.id, clientId: inv.customerId,
+    amountCents: audit.centsStr(decorateInvoice(inv).total),
+    sentBy: audit.actor(req), sentTo: (customer && customer.email) || ''
+  });
   sendJSON(res, 200, decorateInvoice(inv));
 });
 
@@ -398,7 +441,7 @@ route('POST', '/api/sales/import-csv', async (req, res, db) => {
 
   const existing = new Set(db.invoices.map(i => i.importKey).filter(Boolean));
   const warnings = [];
-  let imported = 0, duplicates = 0;
+  let imported = 0, duplicates = 0, importedTotal = 0;
   const taxOn = salestax.salesTaxSettings(db).enabled;
   for (const day of parsed.days) {
     const key = `sales:${customer.id}:${day.date}`;
@@ -423,6 +466,7 @@ route('POST', '/api/sales/import-csv', async (req, res, db) => {
     inv.draft = false;
     existing.add(key);
     imported++;
+    importedTotal = money.add(importedTotal, total);
     const computedTax = money.sub(total, day.netSales);
     if (day.tax && Math.abs(computedTax - day.tax) > 0.02) {
       warnings.push(`${day.date}: POS reported ${day.tax.toFixed(2)} tax but the books computed ${computedTax.toFixed(2)} — check the rate in Settings`);
@@ -432,6 +476,11 @@ route('POST', '/api/sales/import-csv', async (req, res, db) => {
     warnings.unshift('The POS collected sales tax but this company has sales tax turned off in Settings — imported sales were booked without tax');
   }
   save(db);
+  // One batch event (not per-invoice): the chain records the import itself,
+  // with the exact total of what it booked.
+  await audit.append(req.companyId, 'sales.imported', {
+    rowCount: imported, totalCents: audit.centsStr(importedTotal), source: 'csv', actor: audit.actor(req)
+  });
   sendJSON(res, 200, { imported, duplicates, tipsTotal: parsed.tipsTotal, skipped: parsed.info.skipped, warnings });
 });
 
@@ -450,7 +499,7 @@ route('POST', '/api/recurring', async (req, res, db) => {
   if (err) return badRequest(res, err);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(tpl.nextDate)) return badRequest(res, 'A first bill date is required');
   db.recurringInvoices.push(tpl);
-  generateRecurring(db);   // a first date of today (or earlier) bills immediately
+  await generateRecurring(db, req);   // a first date of today (or earlier) bills immediately
   save(db);
   sendJSON(res, 201, tpl);
 });
@@ -491,6 +540,10 @@ route('POST', '/api/time', async (req, res, db) => {
   if (error) return badRequest(res, error);
   db.timeEntries.push(entry);
   save(db);
+  await audit.append(req.companyId, 'time_entry.created', {
+    entryId: entry.id, customerId: entry.customerId,
+    hours: String(entry.hours), rateCents: audit.centsStr(entry.rate), actor: audit.actor(req)
+  });
   sendJSON(res, 201, timetracking.decorateEntry(entry));
 });
 route('PUT', '/api/time/:id', async (req, res, db, params) => {
@@ -502,14 +555,23 @@ route('PUT', '/api/time/:id', async (req, res, db, params) => {
   if (error) return badRequest(res, error);
   db.timeEntries[idx] = entry;
   save(db);
+  await audit.append(req.companyId, 'time_entry.updated', {
+    entryId: entry.id, customerId: entry.customerId,
+    hours: String(entry.hours), rateCents: audit.centsStr(entry.rate), actor: audit.actor(req)
+  });
   sendJSON(res, 200, timetracking.decorateEntry(entry));
 });
-route('DELETE', '/api/time/:id', (req, res, db, params) => {
+route('DELETE', '/api/time/:id', async (req, res, db, params) => {
   const idx = db.timeEntries.findIndex(t => t.id === params.id);
   if (idx === -1) return notFound(res);
   if (db.timeEntries[idx].invoiceId) return badRequest(res, 'This entry is on an invoice. Delete the invoice to release it.');
+  const removed = db.timeEntries[idx];
   db.timeEntries.splice(idx, 1);
   save(db);
+  await audit.append(req.companyId, 'time_entry.deleted', {
+    entryId: removed.id, customerId: removed.customerId,
+    hours: String(removed.hours), rateCents: audit.centsStr(removed.rate), actor: audit.actor(req)
+  });
   sendJSON(res, 200, { ok: true });
 });
 // Roll a customer's unbilled time (optionally a subset by entryIds) into a
@@ -533,6 +595,11 @@ route('POST', '/api/time/invoice', async (req, res, db) => {
   }
   for (const t of entries) t.invoiceId = inv.id;
   save(db);
+  await audit.append(req.companyId, 'invoice.created', {
+    invoiceId: inv.id, clientId: inv.customerId,
+    totalCents: audit.centsStr(decorateInvoice(inv).total),
+    source: 'time', actor: audit.actor(req)
+  });
   sendJSON(res, 201, { ...decorateInvoice(inv), entriesBilled: entries.length });
 });
 
@@ -557,6 +624,9 @@ route('POST', '/api/expenses', async (req, res, db) => {
   };
   db.expenses.push(exp);
   save(db);
+  await audit.append(req.companyId, 'expense.created', {
+    expenseId: exp.id, amountCents: audit.centsStr(exp.amount), category: exp.category, actor: audit.actor(req)
+  });
   sendJSON(res, 201, exp);
 });
 route('PUT', '/api/expenses/:id', async (req, res, db, params) => {
@@ -568,14 +638,21 @@ route('PUT', '/api/expenses/:id', async (req, res, db, params) => {
   for (const k of ['date', 'vendor', 'category', 'paymentMethod', 'notes']) if (k in b) exp[k] = b[k];
   if ('amount' in b) exp.amount = round2(Number(b.amount));
   save(db);
+  await audit.append(req.companyId, 'expense.updated', {
+    expenseId: exp.id, amountCents: audit.centsStr(exp.amount), category: exp.category, actor: audit.actor(req)
+  });
   sendJSON(res, 200, exp);
 });
-route('DELETE', '/api/expenses/:id', (req, res, db, params) => {
+route('DELETE', '/api/expenses/:id', async (req, res, db, params) => {
   const idx = db.expenses.findIndex(x => x.id === params.id);
   if (idx === -1) return notFound(res);
-  receipts.deleteReceipt(db.expenses[idx].receipt);
+  const removed = db.expenses[idx];
+  receipts.deleteReceipt(removed.receipt);
   db.expenses.splice(idx, 1);
   save(db);
+  await audit.append(req.companyId, 'expense.deleted', {
+    expenseId: removed.id, amountCents: audit.centsStr(removed.amount), category: removed.category, actor: audit.actor(req)
+  });
   sendJSON(res, 200, { ok: true });
 });
 
@@ -784,6 +861,7 @@ async function syncConnection(db, conn) {
 
 route('POST', '/api/bank/sync', async (req, res, db) => {
   if (!db.bankConnections.length) return badRequest(res, 'No bank connections to sync');
+  const beforeLen = db.bankTransactions.length;
   let added = 0;
   const errors = [];
   for (const conn of db.bankConnections) {
@@ -794,6 +872,11 @@ route('POST', '/api/bank/sync', async (req, res, db) => {
     }
   }
   save(db);
+  // Exact signed net of the newly imported feed items (they are appended).
+  const net = money.sum(...db.bankTransactions.slice(beforeLen).map(t => t.amount));
+  await audit.append(req.companyId, 'bank.transactions_imported', {
+    count: added, netCents: audit.centsStr(net), source: 'sync', actor: audit.actor(req)
+  });
   sendJSON(res, 200, { added, errors, connections: db.bankConnections.map(publicConnection) });
 });
 
@@ -815,22 +898,27 @@ route('POST', '/api/bank/import-csv', async (req, res, db) => {
   if (!b.csv || !String(b.csv).trim()) return badRequest(res, 'CSV content is required');
   const { transactions, skipped } = parseBankCSV(String(b.csv), { flipSigns: !!b.flipSigns });
   const existing = new Set(db.bankTransactions.map(txnKey));
-  let added = 0, duplicates = 0;
+  let added = 0, duplicates = 0, net = 0;
   for (const t of transactions) {
     if (existing.has(txnKey(t))) { duplicates++; continue; }
     existing.add(txnKey(t));
+    const amount = round2(t.amount);
     db.bankTransactions.push({
       id: uid(),
       source: 'csv',
       accountLabel: b.accountLabel || 'Imported',
       date: t.date,
       name: t.name,
-      amount: round2(t.amount),
+      amount,
       status: 'new'
     });
     added++;
+    net = money.add(net, amount);
   }
   save(db);
+  await audit.append(req.companyId, 'bank.transactions_imported', {
+    count: added, netCents: audit.centsStr(net), source: 'csv', actor: audit.actor(req)
+  });
   sendJSON(res, 200, { added, duplicates, skipped });
 });
 
@@ -1082,6 +1170,9 @@ route('POST', '/api/payroll/runs', async (req, res, db) => {
     const run = payroll.newRun(db, b);
     db.payRuns.push(run);
     save(db);
+    await audit.append(req.companyId, 'payroll.run_created', {
+      runId: run.id, payPeriod: `${run.periodStart}–${run.periodEnd}`, actor: audit.actor(req)
+    });
     sendJSON(res, 201, run);
   } catch (e) {
     badRequest(res, e.message);
@@ -1164,7 +1255,7 @@ route('DELETE', '/api/payroll/runs/:id', (req, res, db, params) => {
   save(db);
   sendJSON(res, 200, { ok: true });
 });
-route('POST', '/api/payroll/runs/:id/finalize', (req, res, db, params) => {
+route('POST', '/api/payroll/runs/:id/finalize', async (req, res, db, params) => {
   const run = db.payRuns.find(r => r.id === params.id);
   if (!run) return notFound(res);
   if (run.status !== 'draft') return badRequest(res, 'This run is already finalized');
@@ -1194,6 +1285,26 @@ route('POST', '/api/payroll/runs/:id/finalize', (req, res, db, params) => {
   db.expenses.push(exp);
   run.postedExpenseId = exp.id;
   save(db);
+  // The compliance record of money leaving: one summary event plus one
+  // payroll.payment per employee, keyed deterministically so a retried
+  // finalize cannot double-record (the run.status guard already prevents
+  // a second finalize; the key makes that explicit in the chain).
+  const payPeriod = `${run.periodStart}–${run.periodEnd}`;
+  await audit.append(req.companyId, 'payroll.run_finalized', {
+    runId: run.id, payPeriod, employeeCount: run.checks.length,
+    totalNetCents: audit.centsStr(run.totals.net), actor: audit.actor(req)
+  });
+  for (const chk of run.checks) {
+    await audit.append(req.companyId, 'payroll.payment', {
+      paymentId: `${run.id}:${chk.employeeId}`,
+      employeeId: chk.employeeId,
+      amountCents: audit.centsStr(chk.computed.net),
+      payPeriod,
+      method: 'ach',
+      initiatedBy: audit.actor(req),
+      idempotencyKey: `${run.id}:${chk.employeeId}`
+    });
+  }
   sendJSON(res, 200, run);
 });
 
@@ -1371,6 +1482,9 @@ route('POST', '/api/payroll/liabilities/deposit', async (req, res, db) => {
   const dep = { id: uid(), bucket: b.bucket, periodKey: b.periodKey || '', amount, date: exp.date, note: b.note || '', expenseId: exp.id };
   db.payrollDeposits.push(dep);
   save(db);
+  await audit.append(req.companyId, 'payroll.deposit_recorded', {
+    depositId: dep.id, amountCents: audit.centsStr(amount), period: dep.periodKey, actor: audit.actor(req)
+  });
   sendJSON(res, 200, { deposit: dep, expense: exp, buckets: payroll.liabilities(db) });
 });
 
@@ -1751,13 +1865,16 @@ route('POST', '/api/salestax/remit', async (req, res, db) => {
   };
   db.salesTaxRemittances.push(rec);
   save(db);
+  await audit.append(req.companyId, 'salestax.remitted', {
+    remittanceId: rec.id, amountCents: audit.centsStr(amount), period: rec.periodKey, actor: audit.actor(req)
+  });
   const cfg = salestax.salesTaxSettings(db);
   sendJSON(res, 200, { remittance: rec, summary: salestax.summary(db, Number(rec.date.slice(0, 4)), cfg) });
 });
 
 // -- dashboard --
-route('GET', '/api/dashboard', (req, res, db) => {
-  generateRecurring(db);
+route('GET', '/api/dashboard', async (req, res, db) => {
+  await generateRecurring(db, req);
   const invoices = db.invoices.map(decorateInvoice).filter(i => i.status !== 'draft');
   const today = todayISO();
 
@@ -1871,6 +1988,15 @@ route('GET', '/api/audit', (req, res, db, params, query) => {
   const limit = Math.min(Number(query.get('limit')) || 100, 500);
   sendJSON(res, 200, [...db.auditLog].reverse().slice(0, limit));
 });
+// Integrity status of the tamper-evident chain: full re-verification on
+// every call. { ok: true, entries } — or ok:false naming the first bad seq.
+route('GET', '/api/audit/chain', async (req, res) => {
+  try {
+    sendJSON(res, 200, await audit.verify(req.companyId));
+  } catch (e) {
+    sendJSON(res, 200, { ok: false, entries: 0, error: e.message, atSeq: e.atSeq ?? null });
+  }
+});
 
 // -- backup: the whole data directory as a plain tarball --
 // This exports everything (Plaid access tokens, bank details, receipts), so
@@ -1966,6 +2092,17 @@ async function handleRequest(req, res) {
         });
         if (db.auditLog.length > 500) db.auditLog.splice(0, db.auditLog.length - 500);
         save(db);
+        // Layer A: the same write, chained and tamper-evident. This runs
+        // after the response, so a chain failure can only be loud (stderr),
+        // not roll back — semantic money events are awaited pre-response in
+        // the handlers themselves.
+        try {
+          await audit.append(req.companyId, 'http.write', {
+            method: req.method, path: pathname, status: res.statusCode, actor: audit.actor(req)
+          });
+        } catch (e) {
+          console.error('audit chain append failed:', e.message);
+        }
       }
       return;
     }

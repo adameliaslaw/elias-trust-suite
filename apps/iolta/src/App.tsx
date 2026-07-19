@@ -22,6 +22,7 @@ import {
 import { format, parseISO, startOfMonth, endOfMonth, isBefore, isAfter, isEqual, subDays, addDays } from 'date-fns';
 import { Client, Transaction, Reconciliation, RPCViolation } from './types';
 import { toCents, fromCents } from './money';
+import { appendAuditEvent, flushAuditQueue, verifyAuditChain } from './audit';
 import { parseBankContent } from './services/geminiService';
 import Chatbot from './components/Chatbot';
 import { motion, AnimatePresence } from 'motion/react';
@@ -94,6 +95,16 @@ export default function App() {
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
   const [pendingTransactions, setPendingTransactions] = useState<Partial<Transaction>[]>([]);
 
+  // Tamper-evident audit chain status (verify-on-open). 'failed' renders a
+  // blocking banner: a broken chain means the trust records cannot be relied
+  // on until investigated.
+  const [auditStatus, setAuditStatus] = useState<
+    { state: 'idle' | 'checking' | 'ok'; entries?: number } |
+    { state: 'failed'; error: string; atSeq: number | null }
+  >({ state: 'idle' });
+
+  const actorFor = (u: User) => u.email || u.uid;
+
   // --- Auth ---
 
   useEffect(() => {
@@ -113,6 +124,29 @@ export default function App() {
   };
 
   const handleLogout = () => auth.signOut();
+
+  // --- Audit chain: verify-on-open + offline-queue flush ---
+  // A compliance log that opens without complaint after tampering is worse
+  // than no log: the whole chain is re-verified on every sign-in, and a
+  // failure is a blocking banner, not a console note.
+  useEffect(() => {
+    if (!user) return;
+    setAuditStatus({ state: 'checking' });
+    verifyAuditChain(user.uid)
+      .then(r => setAuditStatus(r.ok
+        ? { state: 'ok', entries: r.entries }
+        : { state: 'failed', error: (r as { error: string }).error, atSeq: (r as { atSeq: number | null }).atSeq }))
+      .catch(e => {
+        // Verification itself failing (offline, rules not deployed yet) is
+        // not proof of tampering — log it, don't block the app.
+        console.warn('audit chain verification unavailable:', e);
+        setAuditStatus({ state: 'idle' });
+      });
+    flushAuditQueue(user.uid).catch(e => console.warn('audit queue flush failed:', e));
+    const onOnline = () => flushAuditQueue(user.uid).catch(e => console.warn('audit queue flush failed:', e));
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [user]);
 
   // --- Data Fetching ---
 
@@ -233,10 +267,12 @@ export default function App() {
   const handleConfirmReview = async () => {
     if (!user) return;
     try {
+      const actor = actorFor(user);
+      const createdClients: { clientId: string; name: string }[] = [];
       for (const tx of pendingTransactions) {
         let clientId = tx.clientId;
         let clientName = tx.clientName || "Unassigned";
-        
+
         // If client doesn't exist, create it or find it
         if (tx.clientName && tx.clientName !== "Unassigned") {
           const existingClient = clients.find(c => c.name.toLowerCase() === tx.clientName?.toLowerCase());
@@ -251,6 +287,7 @@ export default function App() {
               createdAt: serverTimestamp()
             });
             clientId = clientRef.id;
+            createdClients.push({ clientId, name: clientName });
           }
         }
 
@@ -267,6 +304,25 @@ export default function App() {
           rpcViolations: detectRPCViolations(tx)
         });
       }
+      // One BATCH audit event, not one per row: a statement import is a
+      // single act, and N sequential CAS appends would multiply contention.
+      // Exact integer-cent totals via the money bridge — never floats.
+      let receiptsCents = 0, disbursementsCents = 0;
+      for (const tx of pendingTransactions) {
+        const cents = toCents(tx.amount ?? 0);
+        if (tx.type === 'disbursement') disbursementsCents += Math.abs(cents);
+        else receiptsCents += cents;
+      }
+      for (const c of createdClients) {
+        await appendAuditEvent(user.uid, 'trust.client_created', { clientId: c.clientId, name: c.name, actor });
+      }
+      await appendAuditEvent(user.uid, 'trust.import_confirmed', {
+        rowCount: pendingTransactions.length,
+        receiptsCents: String(receiptsCents),
+        disbursementsCents: String(disbursementsCents),
+        source: 'review',
+        actor
+      });
       setIsReviewModalOpen(false);
       setPendingTransactions([]);
     } catch (error) {
@@ -496,6 +552,20 @@ export default function App() {
             uid: user.uid,
             updatedAt: serverTimestamp()
           });
+          // The Firestore doc is latest-only (setDoc overwrites); the audit
+          // chain is the actual month-over-month HISTORY Rule 1:21-6 expects.
+          // Exact cents; a 1-cent difference is recorded, not tolerated.
+          const monthDate = parseISO(`${recon.month}-01`);
+          await appendAuditEvent(user.uid, 'reconciliation.completed', {
+            reconciliationId: `${user.uid}:${recon.month}`,
+            accountId: 'iolta-trust',
+            periodStart: format(startOfMonth(monthDate), 'yyyy-MM-dd'),
+            periodEnd: format(endOfMonth(monthDate), 'yyyy-MM-dd'),
+            bookBalanceCents: String(toCents(recon.bookBalance)),
+            bankBalanceCents: String(toCents(recon.statementBalance)),
+            differenceCents: String(toCents(recon.bookBalance) - toCents(recon.adjustedBankBalance)),
+            performedBy: actorFor(user)
+          });
         } catch (error) {
           handleFirestoreError(error, OperationType.WRITE, 'reconciliations');
         }
@@ -511,10 +581,15 @@ export default function App() {
     if (!targetMonth || !user) return;
 
     try {
-      await setDoc(doc(db, 'statementBalances', targetMonth), { 
+      await setDoc(doc(db, 'statementBalances', targetMonth), {
         balance: newStatementBalance,
         uid: user.uid,
         updatedAt: serverTimestamp()
+      });
+      await appendAuditEvent(user.uid, 'trust.statement_balance_set', {
+        month: targetMonth,
+        balanceCents: String(toCents(newStatementBalance)),
+        actor: actorFor(user)
       });
       setIsStatementModalOpen(false);
     } catch (error) {
@@ -528,6 +603,9 @@ export default function App() {
 
     try {
       const month = format(parseISO(editingTx.date), 'yyyy-MM');
+      // Snapshot BEFORE the write: the audit record carries what changed
+      // from what, in exact cents.
+      const before = transactions.find(t => t.id === editingTx.id);
       await updateDoc(doc(db, 'transactions', editingTx.id), {
         ...editingTx,
         month,
@@ -535,6 +613,17 @@ export default function App() {
         rpcViolations: detectRPCViolations(editingTx),
         updatedAt: serverTimestamp()
       });
+      if (user) {
+        const changedFields = (['date', 'amount', 'type', 'description', 'checkNumber', 'clientId', 'clearDate'] as const)
+          .filter(k => JSON.stringify(before?.[k]) !== JSON.stringify(editingTx[k]));
+        await appendAuditEvent(user.uid, 'trust.transaction_edited', {
+          transactionId: editingTx.id,
+          beforeAmountCents: String(toCents(before?.amount ?? 0)),
+          afterAmountCents: String(toCents(editingTx.amount ?? 0)),
+          changedFields,
+          actor: actorFor(user)
+        });
+      }
       setIsEditModalOpen(false);
       setEditingTx(null);
     } catch (error) {
@@ -545,7 +634,18 @@ export default function App() {
   const handleDeleteTransaction = async (id: string) => {
     if (!confirm("Are you sure you want to delete this transaction?")) return;
     try {
+      // Deleting a ledger row is exactly what tamper-evidence exists for:
+      // the chain keeps the amount snapshot of what was removed.
+      const before = transactions.find(t => t.id === id);
       await deleteDoc(doc(db, 'transactions', id));
+      if (user) {
+        await appendAuditEvent(user.uid, 'trust.transaction_deleted', {
+          transactionId: id,
+          amountCents: String(toCents(before?.amount ?? 0)),
+          month: before?.month ?? '',
+          actor: actorFor(user)
+        });
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, 'transactions');
     }
@@ -557,13 +657,22 @@ export default function App() {
 
     try {
       const month = format(parseISO(newTx.date), 'yyyy-MM');
-      await addDoc(collection(db, 'transactions'), {
+      const txRef = await addDoc(collection(db, 'transactions'), {
         ...newTx,
         month,
         uid: user.uid,
         createdAt: serverTimestamp(),
         isOutstanding: newTx.type === 'disbursement' && !newTx.clearDate,
         rpcViolations: detectRPCViolations(newTx)
+      });
+      await appendAuditEvent(user.uid, 'trust.transaction_added', {
+        transactionId: txRef.id,
+        clientId: newTx.clientId || 'unassigned',
+        amountCents: String(toCents(newTx.amount)),
+        txType: newTx.type,
+        month,
+        source: 'manual',
+        actor: actorFor(user)
       });
       setIsManualModalOpen(false);
       setNewTx({
@@ -585,6 +694,13 @@ export default function App() {
         clearDate,
         isOutstanding: false
       });
+      if (user) {
+        await appendAuditEvent(user.uid, 'trust.transaction_cleared', {
+          transactionId: txToClear.id,
+          clearDate,
+          actor: actorFor(user)
+        });
+      }
       setIsClearModalOpen(false);
       setTxToClear(null);
     } catch (error) {
@@ -625,6 +741,20 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
+      {/* Blocking banner: the tamper-evident chain does not verify. A broken
+          chain means someone or something altered the audit history — the
+          trust records cannot be relied on until this is investigated. */}
+      {auditStatus.state === 'failed' && (
+        <div className="bg-red-700 text-white px-6 py-3 text-sm font-medium flex items-center gap-3" role="alert">
+          <AlertTriangle size={18} className="shrink-0" />
+          <span>
+            <strong>AUDIT CHAIN INTEGRITY FAILURE</strong> — {auditStatus.error}
+            {auditStatus.atSeq !== null && ` (entry seq ${auditStatus.atSeq})`}.
+            The tamper-evident log for this trust account does not verify. Stop entering
+            transactions and investigate before relying on these records (NJ Rule 1:21-6).
+          </span>
+        </div>
+      )}
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between sticky top-0 z-40">
         <div className="flex items-center gap-3">

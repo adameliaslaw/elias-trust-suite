@@ -4,6 +4,7 @@
 
 const fs = require('fs');
 const store = require('../src/store');
+const audit = require('../src/audit');
 const { buildEntries, filterEntries, totals } = require('../src/entries');
 const { textReport, csvReport, htmlInvoice, money } = require('../src/report');
 const { ledesExport } = require('../src/ledes');
@@ -51,6 +52,10 @@ Commands:
                                Secret values (API keys, tokens) print masked
                                unless --reveal is passed
   matter <dir> <client> <matter>   Bill work done in <dir> to a client/matter
+  audit-verify                 Verify the tamper-evident chains: the raw
+                               ledger (hash-chained in place, legacy events
+                               anchor-checked) and audit.jsonl (overrides,
+                               lawpay, config). Exit 1 names the first bad entry.
 
 Data lives in ${store.homeDir()} (override with BILLABLE_HOME) and never
 leaves this machine. See PRIVACY.md and ETHICS.md.`;
@@ -237,6 +242,22 @@ async function main() {
       console.log(`Today: ${t.count} entries · ${t.steps} steps · ${t.hours.toFixed(1)} hours` +
         ((config.rate || 0) > 0 ? ` · ${money(t.amount, config.currency)}` : '') +
         (t.unreviewed ? ` · ${t.unreviewed} awaiting review (billable serve)` : ''));
+      const v = audit.verifyLedger(store.ledgerPath(), store.auditPath());
+      console.log(v.ok
+        ? `Audit chain: ok (${v.chainedEvents} chained events, ${v.legacyEvents} legacy anchored, ${v.entries} audit entries)`
+        : `Audit chain: FAILED — ${v.error}`);
+      if (!v.ok) process.exitCode = 1;
+      return;
+    }
+
+    case 'audit-verify': {
+      const v = audit.verifyLedger(store.ledgerPath(), store.auditPath());
+      if (v.ok) {
+        console.log(`ok — ${v.chainedEvents} chained ledger events, ${v.legacyEvents} legacy anchored, ${v.entries} audit entries`);
+      } else {
+        console.error(`FAILED — ${v.error}`);
+        process.exitCode = 1;
+      }
       return;
     }
 

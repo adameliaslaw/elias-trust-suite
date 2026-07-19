@@ -17,6 +17,7 @@
 
 const crypto = require('crypto');
 const store = require('./store');
+const audit = require('./audit');
 const { totals } = require('./entries');
 const { sumCents } = require('./money');
 
@@ -112,6 +113,9 @@ function markRequested(request) {
     description: request.description,
     email: request.email,
   });
+  audit.appendSemantic(store.auditPath(), store.ledgerPath(), 'lawpay.request_created', {
+    reference: request.reference, amountCents: String(request.amountCents), actor: 'local'
+  });
 }
 
 // Accounts receivable for payment links: every generated request and every
@@ -160,6 +164,9 @@ function markPaid(reference, events) {
     type: 'payment_received',
     reference,
     amountCents: req.amountCents,
+  });
+  audit.appendSemantic(store.auditPath(), store.ledgerPath(), 'lawpay.payment_recorded', {
+    reference, amountCents: String(req.amountCents), actor: 'local'
   });
   return req;
 }
