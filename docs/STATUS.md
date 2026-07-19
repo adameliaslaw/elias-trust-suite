@@ -9,18 +9,23 @@ npm workspaces: `apps/*`, `packages/*`. Node 20.
 
 ## ✅ Done
 - [x] Repo scaffold (workspaces, tsconfig.base.json, ci.yml at ROOT — see Blocked)
-- [x] `packages/money` (@elias/money) — bigint-cents money math; `equals()` has NO tolerance param by design. 37 tests green (PR #1)
-- [x] `packages/audit` (@elias/audit) — hash-chained tamper-evident log, pure-TS SHA-256, single-writer, verify-on-open (PR #1)
+- [x] `packages/money` (@elias/money) — bigint-cents money math; `equals()` has NO tolerance param by design. 22 tests green (PR #1)
+- [x] `packages/audit` (@elias/audit) — hash-chained tamper-evident log, pure-TS SHA-256, single-writer, verify-on-open. 15 tests green (PR #1)
 - [x] `apps/books` ← quickbucks (PR #2, merged `9c34a9f`)
   - Migration verified byte-exact (43/43 blob SHAs); full suite **372/372** (131 unit + 241 smoke)
   - Fixed during migration: `/api/reports/pnl` returned totalExpenses as netProfit (`ac650ea`)
   - Same bug filed upstream: quickbucks#36
   - quickbucks repo also has merged security PR #35 (setup gate, loopback bind, login throttle, session expiry, DoS fix)
+- [x] `apps/iolta` ← IOLTA-Reconciliation (PR #3, merged `ae52ba8`)
+  - Migration verified byte-exact (21/21 blob SHAs, source @ `984efed` incl. security PR #21)
+  - Verified: `tsc --noEmit` clean, `vite build` green; full monorepo suite still green (books 372/372, money 22/22, audit 15/15)
+  - Integration fixes (commit 2 of PR): dropped duplicate `vite` dep in app; root vitest ^2→^3 (vitest 2 pinned vite 5 → dual-vite type clash in vite.config.ts)
+  - Follow-up: rename package `react-example` → `@elias/iolta`; bundle is 1.2MB — code-splitting candidate
 
 ## ▶️ Next up — START HERE
-- [ ] `apps/iolta` ← IOLTA-Reconciliation (small repo; merged security PR #21: uid-scoped rules, cents math, deposits-in-transit leg, server-side Gemini proxy, xlsx 0.20.3)
-  - Playbook (proven twice): inventory files → user pushes big/binary files via local git (fine-grained PAT, Contents R/W, select repos) → verify byte-exact via blob SHAs → run test suite in sandbox → merge PR → file upstream issues for any bugs found
 - [ ] `apps/billable` ← Billable.ai (merged security PR #16)
+  - Playbook (proven 3×): inventory files w/ blob SHAs → place files via git (sandbox PAT works; see below) → verify byte-exact via blob SHAs → install + typecheck + test suite in sandbox → squash-merge PR → file upstream issues for any bugs found
+  - PAT note: fine-grained PAT w/ Contents R/W on select repos works from sandbox git; verify with `curl -H "Authorization: Bearer $T" api.github.com/repos/owner/repo` (404 = no repo access)
 
 ## After migrations
 - [ ] Wire apps to `@elias/money` (kills float-cents bug class; books/iolta/billable)
@@ -39,5 +44,7 @@ npm workspaces: `apps/*`, `packages/*`. Node 20.
 ## Verification environment notes (for sandbox test runs)
 - Raw download_url tokens expire in ~1–2 min — fetch fresh via MCP `get_file_contents` and curl immediately, or fetch content via MCP directly
 - Binary files (icons/PNGs) not fetchable via MCP — use placeholder + note; they ARE correct in the repo (user pushed via git)
-- `push_files` fails on payloads ≳100KB; `create_or_update_file` handles ~82KB fine
+- `push_files` fails on payloads ≳100KB; `create_or_update_file` handles ~82KB fine — but prefer plain git push from sandbox w/ PAT (no size limit, byte-exact by construction)
 - `/mnt/agents/output` does NOT support symlinks — run `npm install` under /tmp
+- Sandbox network to github.com is flaky — retry git clone/push 2–3× in a loop
+- Dual-vite type clash in vite.config.ts = two vite copies (root-hoisted vs app-local). Fixed by vitest ^3 at root (vite 6 hoisted once)
