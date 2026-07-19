@@ -1,0 +1,174 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: /clients/{clientId}
+// Fields:
+//   - uid: string (required) - Firebase Auth uid of the owning user.
+//   - name: string (required) - The full name of the client.
+//   - matterDescription: string (optional) - A brief description of the legal matter.
+//   - balance: number (optional) - The current balance held in trust for this client.
+//
+// Collection: /transactions/{transactionId}
+// Fields:
+//   - uid: string (required) - Firebase Auth uid of the owning user.
+//   - clientId: string (optional) - Reference to the Client entity.
+//   - clientName: string (optional) - Denormalized client name for sorting.
+//   - date: string (required, format: date) - The date of the transaction (issue date for checks).
+//   - clearDate: string (optional, format: date) - The date the transaction cleared the bank.
+//   - amount: number (required) - The transaction amount (positive for receipts, negative for disbursements).
+//   - type: string (required, enum: ["receipt", "disbursement"]) - The type of transaction.
+//   - checkNumber: string (optional) - The check number for disbursements.
+//   - description: string (optional) - A description of the transaction.
+//   - month: string (required) - The reconciliation month (YYYY-MM).
+//
+// Collection: /reconciliations/{month}
+// Fields:
+//   - uid: string (required) - Firebase Auth uid of the owning user.
+//   - month: string (required) - The reconciliation month (YYYY-MM).
+//   - bankBalance: number (required) - The balance per the bank statement.
+//   - bookBalance: number (required) - The balance per the firm's books (ledger).
+//   - clientBalanceTotal: number (required) - The total of all individual client ledger balances.
+//   - isReconciled: boolean (required) - Whether the three balances match exactly (integer cents).
+//   - outstandingChecksTotal: number (optional) - Total of outstanding checks at month end.
+//   - depositsInTransitTotal: number (optional) - Total of deposits in transit at month end.
+//
+// Collection: /statementBalances/{month}
+// Fields:
+//   - uid: string (required) - Firebase Auth uid of the owning user.
+//   - balance: number (required) - The ending balance from the bank statement.
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "adam@adameliaslaw.com" && request.auth.token.email_verified == true));
+    }
+
+    // ---------------------------------------------------------------
+    // Ownership (audit issue #1)
+    // Every user-data document carries a `uid` field. Reads, updates,
+    // and deletes are restricted to the owner; creates/updates must
+    // stamp the caller's own uid (prevents writing as someone else).
+    // ---------------------------------------------------------------
+    function isOwner() {
+      return isAuthenticated() &&
+        resource.data.uid is string &&
+        resource.data.uid == request.auth.uid;
+    }
+
+    function isOwnerWrite() {
+      return isAuthenticated() &&
+        request.resource.data.keys().hasAll(['uid']) &&
+        request.resource.data.uid is string &&
+        request.resource.data.uid == request.auth.uid;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string &&
+        dateStr.matches("^\\d{4}-\\d{2}-\\d{2}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidClient(data) {
+      return hasRequiredFields(['name', 'uid']) &&
+             data.uid is string &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             (!('matterDescription' in data) || (data.matterDescription is string && data.matterDescription.size() < 500)) &&
+             (!('balance' in data) || data.balance is number);
+    }
+
+    function isValidTransaction(data) {
+      return hasRequiredFields(['date', 'amount', 'type', 'month', 'uid']) &&
+             data.uid is string &&
+             isValidDateString(data.date) &&
+             data.amount is number &&
+             data.type in ['receipt', 'disbursement'] &&
+             data.month is string && data.month.matches("^\\d{4}-\\d{2}$") &&
+             (!('clientId' in data) || (data.clientId is string)) &&
+             (!('clientName' in data) || (data.clientName is string && data.clientName.size() < 100)) &&
+             (!('clearDate' in data) || isValidDateString(data.clearDate)) &&
+             (!('checkNumber' in data) || (data.checkNumber is string && data.checkNumber.size() < 20)) &&
+             (!('description' in data) || (data.description is string && data.description.size() < 500));
+    }
+
+    function isValidReconciliation(data) {
+      return hasRequiredFields(['month', 'bankBalance', 'bookBalance', 'clientBalanceTotal', 'isReconciled', 'uid']) &&
+             data.uid is string &&
+             data.month is string && data.month.matches("^\\d{4}-\\d{2}$") &&
+             data.bankBalance is number &&
+             data.bookBalance is number &&
+             data.clientBalanceTotal is number &&
+             data.isReconciled is bool &&
+             (!('outstandingChecksTotal' in data) || data.outstandingChecksTotal is number) &&
+             (!('depositsInTransitTotal' in data) || data.depositsInTransitTotal is number);
+    }
+
+    function isValidStatementBalance(data) {
+      return hasRequiredFields(['balance', 'uid']) &&
+             data.uid is string &&
+             data.balance is number;
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    match /clients/{clientId} {
+      allow read: if isOwner();
+      allow create: if isOwnerWrite() && isValidClient(request.resource.data);
+      allow update: if isOwner() && isOwnerWrite() && isValidClient(request.resource.data);
+      allow delete: if isOwner();
+    }
+
+    match /transactions/{transactionId} {
+      allow read: if isOwner();
+      allow create: if isOwnerWrite() && isValidTransaction(request.resource.data);
+      allow update: if isOwner() && isOwnerWrite() && isValidTransaction(request.resource.data);
+      allow delete: if isOwner();
+    }
+
+    match /reconciliations/{month} {
+      allow read: if isOwner();
+      allow create: if isOwnerWrite() && isValidReconciliation(request.resource.data);
+      allow update: if isOwner() && isOwnerWrite() && isValidReconciliation(request.resource.data);
+      allow delete: if isOwner();
+    }
+
+    match /statementBalances/{month} {
+      allow read: if isOwner();
+      allow create: if isOwnerWrite() && isValidStatementBalance(request.resource.data);
+      allow update: if isOwner() && isOwnerWrite() && isValidStatementBalance(request.resource.data);
+      allow delete: if isOwner();
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow create, update: if isAdmin();
+    }
+  }
+}

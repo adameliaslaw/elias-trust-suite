@@ -1,0 +1,5 @@
+{
+  "name": "NJ IOLTA Trust Accounting",
+  "description": "A cloud-based reconciliation tool for New Jersey lawyers to manage three-way IOLTA trust accounting with AI-powered bank statement and check image parsing.",
+  "requestFramePermissions": []
+}
