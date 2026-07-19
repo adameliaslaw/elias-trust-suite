@@ -1,7 +1,7 @@
 {
-  "name": "matterproof",
+  "name": "@elias/billable",
   "version": "0.2.0",
-  "description": "Proof of work for every matter: an evidence-grade ledger of AI work kept like a timesheet - attorney review workflow, 6-minute increments, UTBMS codes, LEDES 1998B export, local-only",
+  "description": "Proof of work for every matter: an evidence-grade ledger of AI work kept like a timesheet - attorney review workflow, 6-minute increments, UTBMS codes, LEDES 1998B export, local-only (migrated from Billable.ai)",
   "license": "MIT",
   "type": "commonjs",
   "bin": {
@@ -20,5 +20,6 @@
     "billing",
     "legal",
     "timekeeping"
-  ]
+  ],
+  "private": true
 }
