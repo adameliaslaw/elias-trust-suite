@@ -10,11 +10,11 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "pretest": "npm run build --workspace @elias/money --if-present",
-    "test": "tsx test/money.test.ts",
+    "pretest": "npm run build --workspace @elias/money --workspace @elias/audit --if-present",
+    "test": "tsx test/money.test.ts && tsx test/audit.test.ts",
     "typecheck": "tsc --noEmit",
-    "pretypecheck": "npm run build --workspace @elias/money --if-present",
-    "prebuild": "npm run build --workspace @elias/money --if-present"
+    "pretypecheck": "npm run build --workspace @elias/money --workspace @elias/audit --if-present",
+    "prebuild": "npm run build --workspace @elias/money --workspace @elias/audit --if-present"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
@@ -35,6 +35,7 @@
     "react-markdown": "^10.1.0",
     "tailwind-merge": "^3.5.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "@elias/audit": "0.1.0",
     "@elias/money": "0.1.0"
   },
   "devDependencies": {

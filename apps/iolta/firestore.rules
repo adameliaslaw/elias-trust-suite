@@ -170,5 +170,41 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
       allow create, update: if isAdmin();
     }
+
+    // ===============================================================
+    // Tamper-evident audit chain (@elias/audit wiring)
+    //
+    // auditEntries: the sealed hash-chained history. CREATE-ONLY — rules
+    // cannot verify SHA-256 linkage, but they CAN make history immutable:
+    // no update, no delete. verify-on-open detects any out-of-band change.
+    // auditMeta/{uid}: the chain head — the compare-and-swap cursor that
+    // serializes concurrent tabs/devices via Firestore transactions.
+    // ===============================================================
+    function isValidAuditEntry(data) {
+      return hasRequiredFields(['seq', 'timestamp', 'type', 'payload', 'prevHash', 'hash', 'uid']) &&
+             data.uid is string &&
+             data.seq is int && data.seq >= 0 &&
+             data.timestamp is string && data.timestamp.size() < 40 &&
+             data.type is string && data.type.size() < 80 &&
+             data.payload is map &&
+             data.prevHash is string && data.prevHash.size() <= 64 &&
+             data.hash is string && data.hash.size() == 64;
+    }
+
+    match /auditEntries/{entryId} {
+      allow read: if isOwner();
+      allow create: if isOwnerWrite() && isValidAuditEntry(request.resource.data);
+      allow update, delete: if false;   // history is append-only
+    }
+
+    match /auditMeta/{docId} {
+      allow read: if isAuthenticated() && docId == request.auth.uid;
+      allow create, update: if isAuthenticated() && docId == request.auth.uid &&
+        request.resource.data.keys().hasOnly(['seq', 'hash', 'uid', 'updatedAt']) &&
+        request.resource.data.seq is int && request.resource.data.seq >= 0 &&
+        request.resource.data.hash is string && request.resource.data.hash.size() == 64 &&
+        request.resource.data.uid == request.auth.uid;
+      allow delete: if false;
+    }
   }
 }
