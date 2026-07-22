@@ -23,13 +23,53 @@ import { Money } from '@elias/money';
 
 /**
  * Exact decimal string for a JS number. String() is shortest round-trip,
- * so 13.35 -> '13.35'. Guards against scientific notation leaking into
- * @elias/money's factor parser (only reachable for absurd magnitudes).
+ * so 13.35 -> '13.35'. String() switches to scientific notation for very
+ * small (|n| < 1e-6) or very large (|n| >= 1e21) magnitudes; @elias/money's
+ * factor parser only accepts plain decimals, so expand the notation here.
+ * A tiny sub-cent leg (float noise, AI-extracted amounts) must round to 0
+ * cents rather than crash the reconciliation summation. Absurd magnitudes are
+ * caught later, at cents conversion, where exact safe-integer cents are
+ * required.
  */
 export function dec(n: number): string {
+  if (typeof n !== 'number' || !Number.isFinite(n)) {
+    throw new Error(`dec: expected a finite number, got ${n}`);
+  }
   const s = String(n);
-  if (/[eE]/.test(s)) throw new Error(`dec: non-decimal number ${s}`);
-  return s;
+  return /[eE]/.test(s) ? expandScientific(s) : s;
+}
+
+/** Expand a JS exponential literal ("1e-7", "1.5e-5", "1e+21") to plain decimal. */
+function expandScientific(s: string): string {
+  const m = /^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/.exec(s);
+  if (!m) throw new Error(`dec: cannot expand number ${s}`);
+  const [, sign, intPart, frac = '', expStr] = m;
+  const exp = parseInt(expStr, 10);
+  const digits = intPart + frac;
+  const point = intPart.length + exp; // decimal point position within `digits`
+  let out: string;
+  if (point <= 0) {
+    out = '0.' + '0'.repeat(-point) + digits;
+  } else if (point >= digits.length) {
+    out = digits + '0'.repeat(point - digits.length);
+  } else {
+    out = digits.slice(0, point) + '.' + digits.slice(point);
+  }
+  if (out.includes('.')) out = out.replace(/0+$/, '').replace(/\.$/, '');
+  return sign + out;
+}
+
+/**
+ * Narrow exact bigint cents to a JS number, refusing values outside the safe
+ * integer range — beyond it Number() silently loses precision, which trust
+ * accounting must never do. This is the magnitude guard the old dec() faked by
+ * rejecting scientific notation outright.
+ */
+function centsToNumber(cents: bigint): number {
+  if (cents > BigInt(Number.MAX_SAFE_INTEGER) || cents < BigInt(Number.MIN_SAFE_INTEGER)) {
+    throw new Error(`money: amount exceeds exact safe integer cents (${cents})`);
+  }
+  return Number(cents);
 }
 
 /**
@@ -46,7 +86,7 @@ function dollars(n: number): Money {
 
 /** Convert a dollar amount to integer cents, exact half-up (away from zero). */
 export const toCents = (amount: number | null | undefined): number =>
-  Number(dollars(amount ?? 0).toCents());
+  centsToNumber(dollars(amount ?? 0).toCents());
 
 /** Convert integer cents back to dollars for storage/display. */
 export const fromCents = (cents: number): number => cents / 100;
@@ -57,7 +97,7 @@ export const sumToCents = (amounts: (number | null | undefined)[]): number => {
   for (const amount of amounts) {
     if (amount) total = total.add(dollars(amount));
   }
-  return Number(total.toCents());
+  return centsToNumber(total.toCents());
 };
 
 /** Exact difference between two dollar amounts, in cents. */

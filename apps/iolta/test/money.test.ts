@@ -49,13 +49,30 @@ test('the misbilling case from books/billable: 20.025 is 2003 cents, not 2002', 
   assert.equal(toCents(20.025), 2003);
 });
 
-test('toCents rejects scientific-notation-magnitude numbers instead of guessing', () => {
-  assert.throws(() => toCents(1e21), /non-decimal/);
+// --- Scientific notation must not crash the ledger (audit issue #20) -------
+// JS String() switches to exponential form for |n| < 1e-6 (e.g. float noise,
+// AI-extracted sub-cent amounts). The old dec() threw on the 'e', so a single
+// tiny leg took down the whole reconciliation summation. A sub-cent value must
+// round to 0 cents, not blow up.
+test('dec() expands small scientific-notation numbers to plain decimals', () => {
+  assert.equal(dec(1e-7), '0.0000001');
+  assert.equal(dec(1.5e-5), '0.000015');
+  assert.equal(dec(13.35), '13.35'); // ordinary decimals pass through unchanged
 });
 
-test('dec() rejects non-decimal numbers', () => {
-  assert.throws(() => dec(1e-7), /non-decimal/);
-  assert.equal(dec(13.35), '13.35');
+test('toCents(sub-cent) rounds to 0 instead of crashing on scientific notation', () => {
+  assert.equal(toCents(1e-7), 0);
+  assert.equal(toCents(4e-6), 0);
+});
+
+test('sumToCents tolerates a tiny scientific-notation leg without crashing', () => {
+  assert.equal(sumToCents([1e-7, 5.0, 2.5]), 750);
+});
+
+// Absurd magnitudes still refused: 1e21 dollars can't be exact safe-integer
+// cents, so guessing would silently lose precision. Reject loudly instead.
+test('toCents rejects magnitudes beyond exact safe-integer cents', () => {
+  assert.throws(() => toCents(1e21), /safe integer/);
 });
 
 // --- Exact summation -------------------------------------------------------
