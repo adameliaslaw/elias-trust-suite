@@ -25,6 +25,7 @@ const { buildEntries, filterEntries, totals } = require('./entries');
 const { textReport, csvReport, htmlInvoice } = require('./report');
 const { ledesExport } = require('./ledes');
 const { eventFromHookPayload } = require('./hooks');
+const { clientExportsAllowed, DISABLED_MESSAGE } = require('./exports-gate');
 
 // sendgridApiKey is deliberately NOT exposed through the config API —
 // it stays CLI/file-only so no local page can read it.
@@ -240,6 +241,9 @@ function createServer({ token, lanMode = false } = {}) {
       }
 
       if (route === 'POST /api/lawpay/link') {
+        // #18 stopgap: a payment link is a client-facing bill; refuse until
+        // reviewed-only billing is enforced (Phase 4 / #23).
+        if (!clientExportsAllowed()) return send(res, 403, { error: DISABLED_MESSAGE });
         const { buildPaymentRequest, markRequested } = require('./lawpay');
         const body = JSON.parse(await readBody(req));
         const config = store.readConfig();
@@ -339,6 +343,8 @@ function createServer({ token, lanMode = false } = {}) {
       }
 
       if (route === 'GET /export.ledes') {
+        // #18 stopgap: LEDES is a client-facing invoice (Phase 4 / #23).
+        if (!clientExportsAllowed()) return send(res, 403, { error: DISABLED_MESSAGE });
         const { config, entries } = loadEntries(url.searchParams);
         res.setHeader('content-disposition', 'attachment; filename="matterproof.ledes.txt"');
         return send(res, 200, ledesExport(entries, config, {
@@ -348,6 +354,8 @@ function createServer({ token, lanMode = false } = {}) {
       }
 
       if (route === 'GET /export.html') {
+        // #18 stopgap: the HTML statement is a client-facing invoice (Phase 4 / #23).
+        if (!clientExportsAllowed()) return send(res, 403, { error: DISABLED_MESSAGE });
         const { config, entries } = loadEntries(url.searchParams);
         return send(res, 200, '<!doctype html><html><head><meta charset="utf-8">' +
           htmlInvoice(entries, config, {
