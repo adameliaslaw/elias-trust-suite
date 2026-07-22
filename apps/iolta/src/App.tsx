@@ -23,6 +23,7 @@ import { format, parseISO, startOfMonth, endOfMonth, isBefore, isAfter, isEqual,
 import { Client, Transaction, Reconciliation, RPCViolation } from './types';
 import { toCents, fromCents } from './money';
 import { appendAuditEvent, flushAuditQueue, verifyAuditChain } from './audit';
+import { computeReconciliations } from './reconciliation';
 import { parseBankContent } from './services/geminiService';
 import Chatbot from './components/Chatbot';
 import { motion, AnimatePresence } from 'motion/react';
@@ -440,85 +441,12 @@ export default function App() {
 
   // --- Reconciliation Logic ---
 
-  const reconciliationSummary = useMemo(() => {
-    const months = Array.from(new Set(transactions.map(tx => tx.month))).sort().reverse();
-    return months.map(month => {
-      const monthDate = parseISO(`${month}-01`);
-      const monthEnd = endOfMonth(monthDate);
-      const onOrBeforeMonthEnd = (dateStr: string) =>
-        isBefore(parseISO(dateStr), monthEnd) || isEqual(parseISO(dateStr), monthEnd);
-      // Not cleared by month end = no clearDate, or cleared after month end.
-      const notClearedByMonthEnd = (tx: Transaction) =>
-        !tx.clearDate || isAfter(parseISO(tx.clearDate), monthEnd);
-      
-      // All money below is computed in integer cents (audit #10).
-      
-      // Bank Statement Balance (User provided)
-      const statementBalanceCents = toCents(statementBalances[month] || 0);
-      
-      // Outstanding Checks: disbursements issued on/before month end, but
-      // cleared after month end or not yet cleared (amounts are negative).
-      const outstandingChecks = transactions.filter(tx => 
-        tx.type === 'disbursement' && 
-        onOrBeforeMonthEnd(tx.date) &&
-        notClearedByMonthEnd(tx)
-      );
-      const outstandingTotalCents = outstandingChecks.reduce((sum, tx) => sum + toCents(tx.amount), 0);
-      
-      // Deposits in Transit: receipts dated on/before month end, but cleared
-      // after month end or not yet cleared (audit #7 — was missing entirely).
-      const depositsInTransit = transactions.filter(tx =>
-        tx.type === 'receipt' &&
-        onOrBeforeMonthEnd(tx.date) &&
-        notClearedByMonthEnd(tx)
-      );
-      const depositsInTransitTotalCents = depositsInTransit.reduce((sum, tx) => sum + toCents(tx.amount), 0);
-      
-      // Leg 1: Adjusted Bank Balance
-      //   = statement balance − outstanding checks + deposits in transit
-      // (check amounts are negative, deposits positive, so plain addition).
-      const adjustedBankBalanceCents = statementBalanceCents + outstandingTotalCents + depositsInTransitTotalCents;
-      
-      // Leg 2: Book (checkbook) Balance — sum of ALL transactions through
-      // month end, regardless of client assignment (audit #7 — was missing).
-      const bookBalanceCents = transactions
-        .filter(tx => onOrBeforeMonthEnd(tx.date))
-        .reduce((sum, tx) => sum + toCents(tx.amount), 0);
-      
-      // Leg 3: Client Ledger Total (sum of all client balances as of month end)
-      const clientBalancesCents = clients.map(client => {
-        const balanceCents = transactions
-          .filter(tx => tx.clientId === client.id && onOrBeforeMonthEnd(tx.date))
-          .reduce((sum, tx) => sum + toCents(tx.amount), 0);
-        return { name: client.name, balanceCents };
-      });
-      const clientBalanceTotalCents = clientBalancesCents.reduce((sum, c) => sum + c.balanceCents, 0);
-
-      // Three-way reconciliation: all three legs must match to the penny.
-      // A book-vs-ledger gap isolates unassigned transactions; a bank-vs-book
-      // gap isolates timing/recording differences.
-      const isReconciled =
-        adjustedBankBalanceCents === bookBalanceCents &&
-        bookBalanceCents === clientBalanceTotalCents;
-
-      return {
-        month,
-        statementBalance: fromCents(statementBalanceCents),
-        adjustedBankBalance: fromCents(adjustedBankBalanceCents),
-        bookBalance: fromCents(bookBalanceCents),
-        clientBalanceTotal: fromCents(clientBalanceTotalCents),
-        isReconciled,
-        outstandingChecksCount: outstandingChecks.length,
-        outstandingChecksTotal: fromCents(outstandingTotalCents),
-        depositsInTransitCount: depositsInTransit.length,
-        depositsInTransitTotal: fromCents(depositsInTransitTotalCents),
-        clientBalances: clientBalancesCents
-          .filter(c => c.balanceCents !== 0)
-          .map(c => ({ name: c.name, balance: fromCents(c.balanceCents) }))
-          .sort((a, b) => a.name.localeCompare(b.name))
-      };
-    });
-  }, [transactions, clients, statementBalances]);
+  // Three-way reconciliation, computed in exact integer cents (audit #7/#10/#13).
+  // Logic lives in src/reconciliation.ts so it is unit-tested without a render.
+  const reconciliationSummary = useMemo(
+    () => computeReconciliations(transactions, clients, statementBalances),
+    [transactions, clients, statementBalances]
+  );
 
   // --- Persist Reconciliation Snapshots (audit #7) ---
   // Writes the computed three-way reconciliation for each month to
@@ -537,6 +465,7 @@ export default function App() {
           toCents(existing.clientBalanceTotal) === toCents(recon.clientBalanceTotal) &&
           toCents(existing.outstandingChecksTotal ?? 0) === toCents(recon.outstandingChecksTotal) &&
           toCents(existing.depositsInTransitTotal ?? 0) === toCents(recon.depositsInTransitTotal) &&
+          (existing.status ?? (existing.isReconciled ? 'reconciled' : 'discrepancy')) === recon.status &&
           existing.isReconciled === recon.isReconciled;
         if (unchanged) continue;
 
@@ -549,9 +478,15 @@ export default function App() {
             outstandingChecksTotal: recon.outstandingChecksTotal,
             depositsInTransitTotal: recon.depositsInTransitTotal,
             isReconciled: recon.isReconciled,
+            status: recon.status,
             uid: user.uid,
             updatedAt: serverTimestamp()
           });
+          // Only a genuinely reconciled month seals reconciliation.completed
+          // (issue #13). Incomplete (no statement balance entered) and
+          // discrepancy months persist their snapshot for the record, but must
+          // NOT emit a compliance event that was never actually performed.
+          if (recon.status !== 'reconciled') continue;
           // The Firestore doc is latest-only (setDoc overwrites); the audit
           // chain is the actual month-over-month HISTORY Rule 1:21-6 expects.
           // Exact cents; a 1-cent difference is recorded, not tolerated.
@@ -657,18 +592,25 @@ export default function App() {
 
     try {
       const month = format(parseISO(newTx.date), 'yyyy-MM');
+      // Convention: receipts are positive, disbursements negative (types.ts).
+      // The form collects a magnitude; the sign is derived from the type so
+      // reconciliation math (outstanding checks, book balance) stays correct.
+      const signedAmount = newTx.type === 'disbursement'
+        ? -Math.abs(newTx.amount)
+        : Math.abs(newTx.amount);
+      const normalizedTx = { ...newTx, amount: signedAmount };
       const txRef = await addDoc(collection(db, 'transactions'), {
-        ...newTx,
+        ...normalizedTx,
         month,
         uid: user.uid,
         createdAt: serverTimestamp(),
         isOutstanding: newTx.type === 'disbursement' && !newTx.clearDate,
-        rpcViolations: detectRPCViolations(newTx)
+        rpcViolations: detectRPCViolations(normalizedTx)
       });
       await appendAuditEvent(user.uid, 'trust.transaction_added', {
         transactionId: txRef.id,
         clientId: newTx.clientId || 'unassigned',
-        amountCents: String(toCents(newTx.amount)),
+        amountCents: String(toCents(signedAmount)),
         txType: newTx.type,
         month,
         source: 'manual',
@@ -763,7 +705,7 @@ export default function App() {
           </div>
           <div>
             <h1 className="text-lg font-bold text-gray-900 leading-tight">IOLTA Reconciliation</h1>
-            <p className="text-xs text-gray-500">NJ Rule 1:21-6 Compliance</p>
+            <p className="text-xs text-gray-500">NJ Rule 1:21-6 reconciliation aid — not a compliance guarantee</p>
           </div>
         </div>
 
@@ -880,10 +822,14 @@ export default function App() {
                         Set Statement Balance
                       </button>
                       <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
-                        recon.isReconciled ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                        recon.status === 'reconciled' ? 'bg-green-100 text-green-700'
+                          : recon.status === 'incomplete' ? 'bg-amber-100 text-amber-700'
+                          : 'bg-red-100 text-red-700'
                       }`}>
-                        {recon.isReconciled ? <CheckCircle size={14} /> : <AlertTriangle size={14} />}
-                        {recon.isReconciled ? 'Reconciled' : 'Out of Balance'}
+                        {recon.status === 'reconciled' ? <CheckCircle size={14} /> : <AlertTriangle size={14} />}
+                        {recon.status === 'reconciled' ? 'Reconciled'
+                          : recon.status === 'incomplete' ? 'Incomplete'
+                          : 'Out of Balance'}
                       </div>
                     </div>
                   </div>
@@ -891,7 +837,11 @@ export default function App() {
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                     <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
                       <p className="text-xs font-semibold text-gray-400 uppercase mb-1">Bank Statement Balance</p>
-                      <p className="text-xl font-bold text-gray-900">${recon.statementBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                      {recon.hasStatementBalance ? (
+                        <p className="text-xl font-bold text-gray-900">${recon.statementBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                      ) : (
+                        <p className="text-xl font-bold text-amber-600">Not entered</p>
+                      )}
                     </div>
                     <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
                       <p className="text-xs font-semibold text-gray-400 uppercase mb-1">Adjusted Bank Balance</p>
@@ -945,7 +895,17 @@ export default function App() {
                     </div>
                   </div>
 
-                  {!recon.isReconciled && (
+                  {recon.status === 'incomplete' && (
+                    <div className="mt-4 p-3 bg-amber-50 border border-amber-100 rounded-lg text-sm text-amber-800 flex items-center gap-2">
+                      <AlertTriangle size={16} />
+                      <span>
+                        No bank statement balance entered for this month — reconciliation is incomplete.
+                        Set the statement balance to reconcile.
+                      </span>
+                    </div>
+                  )}
+
+                  {recon.status === 'discrepancy' && (
                     <div className="mt-4 p-3 bg-red-50 border border-red-100 rounded-lg text-sm text-red-700 space-y-1">
                       <div className="flex items-center gap-2">
                         <AlertTriangle size={16} />
@@ -1227,8 +1187,6 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
-
-      <Chatbot />
 
       {/* Review Transactions Modal */}
       <AnimatePresence>
@@ -1537,6 +1495,124 @@ export default function App() {
                 <button 
                   type="button"
                   onClick={() => setIsStatementModalOpen(false)}
+                  className="w-full bg-gray-100 text-gray-600 py-3 rounded-xl font-bold hover:bg-gray-200 transition-colors"
+                >
+                  Cancel
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Manual Entry Modal — records a receipt or disbursement by hand
+          (handleManualSubmit existed but had no UI, so the toolbar button was
+          dead; audit issue #20). */}
+      <AnimatePresence>
+        {isManualModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsManualModalOpen(false)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="relative bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden p-8"
+            >
+              <h2 className="text-xl font-bold text-gray-900 mb-4">Manual Transaction Entry</h2>
+              <p className="text-sm text-gray-500 mb-6">Record a receipt or disbursement directly. Enter the amount as a positive number — the sign follows the type.</p>
+
+              <form onSubmit={handleManualSubmit} className="space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-400 uppercase mb-1">Type</label>
+                    <select
+                      value={newTx.type}
+                      onChange={(e) => setNewTx(prev => ({ ...prev, type: e.target.value as Transaction['type'] }))}
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    >
+                      <option value="receipt">Receipt</option>
+                      <option value="disbursement">Disbursement</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-400 uppercase mb-1">Date</label>
+                    <input
+                      type="date"
+                      required
+                      value={newTx.date}
+                      onChange={(e) => setNewTx(prev => ({ ...prev, date: e.target.value }))}
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase mb-1">Amount</label>
+                  <div className="relative">
+                    <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      required
+                      autoFocus
+                      value={newTx.amount ? Math.abs(newTx.amount) : ''}
+                      onChange={(e) => setNewTx(prev => ({ ...prev, amount: parseFloat(e.target.value) }))}
+                      className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase mb-1">Client</label>
+                  <select
+                    value={newTx.clientId || ''}
+                    onChange={(e) => {
+                      const client = clients.find(c => c.id === e.target.value);
+                      setNewTx(prev => ({ ...prev, clientId: e.target.value || undefined, clientName: client?.name }));
+                    }}
+                    className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                  >
+                    <option value="">Unassigned</option>
+                    {clients.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+                {newTx.type === 'disbursement' && (
+                  <div>
+                    <label className="block text-xs font-bold text-gray-400 uppercase mb-1">Check # (optional)</label>
+                    <input
+                      type="text"
+                      value={newTx.checkNumber || ''}
+                      onChange={(e) => setNewTx(prev => ({ ...prev, checkNumber: e.target.value }))}
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    />
+                  </div>
+                )}
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase mb-1">Description</label>
+                  <input
+                    type="text"
+                    required
+                    value={newTx.description}
+                    onChange={(e) => setNewTx(prev => ({ ...prev, description: e.target.value }))}
+                    className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200"
+                >
+                  Add Transaction
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsManualModalOpen(false)}
                   className="w-full bg-gray-100 text-gray-600 py-3 rounded-xl font-bold hover:bg-gray-200 transition-colors"
                 >
                   Cancel

@@ -5,8 +5,8 @@ import { fileURLToPath } from "url";
 import multer from "multer";
 import { createRequire } from 'module';
 import crypto from "crypto";
+import { extractPdfText } from './src/pdf';
 const require = createRequire(import.meta.url);
-const pdf = require('pdf-parse');
 const firebaseConfig = require('./firebase-applet-config.json');
 import * as xlsx from "xlsx";
 import { parse as parseCsv } from "csv-parse/sync";
@@ -227,8 +227,7 @@ async function startServer() {
 
           if (fileExtension === ".pdf") {
             const dataBuffer = fs.readFileSync(file.path);
-            const data = await (pdf as any)(dataBuffer);
-            content = data.text;
+            content = await extractPdfText(dataBuffer);
           } else if (fileExtension === ".xlsx" || fileExtension === ".xls") {
             const workbook = xlsx.readFile(file.path);
             const sheetNames = workbook.SheetNames;

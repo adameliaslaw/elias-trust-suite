@@ -9,6 +9,10 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 process.env.BILLABLE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'billable-test-'));
+// The test harness is an authorized operator: opt the whole suite into
+// client-facing exports so capability tests exercise the real paths. The
+// #18-stopgap default (OFF) is proven separately in exports-gate.test.js.
+process.env.BILLABLE_ALLOW_CLIENT_EXPORTS = '1';
 
 const { roundHours, activeSeconds, narrative, classifyTool } = require('../src/billing');
 const { sumCents } = require('../src/money');
@@ -719,6 +723,9 @@ test('config CLI masks secrets unless --reveal', () => {
 
 // --- tamper-evident audit chains (@elias/audit wiring) ---
 require('./audit.test.js')(test);
+
+// --- #18 stopgap: client-facing exports disabled by default ---
+require('./exports-gate.test.js')(test);
 
 process.on('exit', () => {
   console.log(`\n${passed} tests passed${process.exitCode ? ' (with failures)' : ''}`);

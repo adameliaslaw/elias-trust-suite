@@ -6,12 +6,13 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
-    "start": "node server.ts",
+    "prestart": "npm run build",
+    "start": "NODE_ENV=production tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "pretest": "npm run build --workspace @elias/money --workspace @elias/audit --if-present",
-    "test": "tsx test/money.test.ts && tsx test/audit.test.ts",
+    "test": "tsx test/money.test.ts && tsx test/audit.test.ts && tsx test/reconciliation.test.ts && tsx test/pdf.test.ts",
     "typecheck": "tsc --noEmit",
     "pretypecheck": "npm run build --workspace @elias/money --workspace @elias/audit --if-present",
     "prebuild": "npm run build --workspace @elias/money --workspace @elias/audit --if-present"

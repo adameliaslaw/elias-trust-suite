@@ -9,6 +9,7 @@ const { buildEntries, filterEntries, totals } = require('../src/entries');
 const { textReport, csvReport, htmlInvoice, money } = require('../src/report');
 const { ledesExport } = require('../src/ledes');
 const { installHooks, eventFromHookPayload, settingsPath } = require('../src/hooks');
+const { clientExportsAllowed, DISABLED_MESSAGE } = require('../src/exports-gate');
 
 const USAGE = `Matterproof — proof of work for every matter
 
@@ -269,6 +270,13 @@ async function main() {
         matter: args.matter,
       });
       const format = args.format || 'text';
+      // #18 stopgap: LEDES and HTML are the client-facing invoice formats.
+      // Refuse them until reviewed-only billing is enforced (Phase 4 / #23).
+      if ((format === 'ledes' || format === 'html') && !clientExportsAllowed()) {
+        console.error(`Refusing to emit a ${format.toUpperCase()} invoice. ${DISABLED_MESSAGE}`);
+        process.exitCode = 1;
+        return;
+      }
       let output;
       if (format === 'csv') {
         output = csvReport(entries, config);
@@ -351,6 +359,14 @@ async function main() {
         return;
       }
       if (sub === 'push') {
+        // #18 stopgap: pushing entries into Clio bills the client. A dry-run is
+        // a local preview (no external write), so it stays allowed; the real
+        // push is refused until reviewed-only billing is enforced (Phase 4 / #23).
+        if (!args['dry-run'] && !clientExportsAllowed()) {
+          console.error(`Refusing to push entries to Clio. ${DISABLED_MESSAGE}`);
+          process.exitCode = 1;
+          return;
+        }
         const entries = filterEntries(buildEntries(store.readEvents(), config, store.readOverrides()), {
           from: args.from,
           to: args.to,
@@ -416,6 +432,13 @@ async function main() {
           '       [--email E] [--desc TEXT] [--out statement.html] [--send] [--dry-run]\n' +
           '  requests                 List payment requests and outstanding balance\n' +
           '  paid <MP-reference>      Record that a request was paid');
+        process.exitCode = 1;
+        return;
+      }
+      // #18 stopgap: a payment link is a client-facing bill (and --send emails
+      // it). Refuse until reviewed-only billing is enforced (Phase 4 / #23).
+      if (!clientExportsAllowed()) {
+        console.error(`Refusing to create a LawPay payment request. ${DISABLED_MESSAGE}`);
         process.exitCode = 1;
         return;
       }

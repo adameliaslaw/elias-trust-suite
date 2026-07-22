@@ -28,6 +28,9 @@ export interface Reconciliation {
   bookBalance: number;
   clientBalanceTotal: number;
   isReconciled: boolean;
+  // 'incomplete' = no statement balance entered yet (issue #13); a month is
+  // never "reconciled" without one. Optional for docs written before this field.
+  status?: 'incomplete' | 'reconciled' | 'discrepancy';
   outstandingChecksTotal: number;
   depositsInTransitTotal: number;
   uid?: string; // Owner's Firebase Auth uid — enforced by firestore.rules
