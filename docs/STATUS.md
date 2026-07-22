@@ -4,8 +4,9 @@
 > [HOMEWORK.md](HOMEWORK.md) for exactly where to start, then the epic issue for the phase.
 > Canonical plan: [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) · Findings narrative:
 > [EVALUATION.md](EVALUATION.md) · Backlog: GitHub Issues **#11–#27**.
-> Last updated: 2026-07-22 — Phase 1 (#20) complete: CI made deterministic; PDF import, false-"Reconciled",
-> scientific-notation crash, dead UI, and unsafe Matterproof exports all fixed with reproducing tests (PR open).
+> Last updated: 2026-07-22 — Phase 2 (#21) complete (PR open): IOLTA rebuilt on independent bank/book/
+> statement/match streams (#11), a firms→accounts multi-tenant hierarchy with account-scoped doc IDs (#15),
+> and atomic + idempotent imports — all with reproducing tests. Phase 1 (#20) landed before it.
 
 ## Product
 
@@ -31,13 +32,15 @@ The previous STATUS asserted "480 checks green" and a sound audit/reconciliation
   not a `"300"` substring). Verified green 10/10 runs → **CI is now deterministic.**
 - ✅ **FIXED (#12)** — IOLTA PDF import uses the `pdf-parse` v2 `PDFParse` class; covered by a
   real-PDF fixture test.
-- ❌ **IOLTA reconciliation is partly circular** — legs share one source; "correct math" ≠ correct
-  model. (#11 — Phase 2)
+- ✅ **FIXED (#11)** — IOLTA reconciliation now reconciles four independent streams (bank / book /
+  statement / match); a bank line never booked surfaces as a discrepancy. Reproducing test added.
 - ✅ **FIXED (#13)** — a month with no statement balance is now `incomplete`, never "Reconciled";
   only a genuinely reconciled month seals `reconciliation.completed`. Reproducing test added.
 - ❌ **Audit verify ignores the head it maintains**; lost localStorage queue drops entries silently.
   (#16, verified — Phase 5)
-- ❌ **Multi-user/month collisions**; trust account hardcoded `iolta-trust`. (#15, verified — Phase 2)
+- ✅ **FIXED (#15)** — firms→memberships→trust-accounts hierarchy; period doc IDs are account/uid-scoped
+  (`{accountId}__{month}`), no hardcoded `iolta-trust`. Two firms/accounts coexist without collision
+  (reproducing test). Rules written; deployment deferred (Phase 8 / #27).
 - ❌ **Books stores Plaid/ACH/employee-bank secrets in plaintext**, backups included. (#24 — Phase 5)
 - ⚠️ **Matterproof invents attorney time** (~0.1h/prompt) and its **review gate is bypassable**
   (#17, #18 — Phase 4). **Contained (#20):** client-facing exports (LEDES/HTML/LawPay/Clio) are now
@@ -50,9 +53,9 @@ The tests are valuable but largely do not cover these paths.
 | Phase | Epic | Status |
 |---|---|---|
 | 0 — Define the product | #19 | ⬜ Not started (owner decisions; rewritten as a decision memo) |
-| 1 — Contain risk + regression tests | #20 | ✅ Done — PR open, CI deterministic |
-| 2 — Rebuild IOLTA accounting model | #21 | ⬜ Next ← **START HERE (code)** |
-| 3 — Reconciliation lifecycle + retention | #22 | ⬜ Blocked on 2 |
+| 1 — Contain risk + regression tests | #20 | ✅ Done — CI deterministic |
+| 2 — Rebuild IOLTA accounting model | #21 | ✅ Done — PR open (#11, #15 closed) |
+| 3 — Reconciliation lifecycle + retention | #22 | ⬜ Next ← **START HERE (code)** (unblocked by 2) |
 | 4 — Redesign Matterproof billing | #23 | ⬜ Blocked on 1 |
 | 5 — Data + audit hardening | #24 | ⬜ Blocked on 2–4 |
 | 6 — Books role + `packages/rules` | #25 | ⬜ Blocked on 0 |
@@ -69,7 +72,10 @@ The tests are valuable but largely do not cover these paths.
 
 ## Blocked on owner
 
-- Product-definition decisions (#19) gate Phases 2, 6, 7.
+- Product-definition decisions (#19) gate Phases 6, 7. **Decision 3 (system of record) is still
+  unratified**; Phase 2 proceeded on the decision-safe structure (single-firm/multi-account now,
+  modeled multi-tenant per Decision 1's recommended default). Ratifying 3 later needs no schema change;
+  overriding to "suite is system of record for invoices/payments" would add thin invoice/payment objects.
 - iolta `firebase deploy --only firestore:rules` (rules still undeployed). (#27)
 - Payroll: set `PAYROLL_ENCRYPTION_KEY`. plaid-bill-tracker: rotate Plaid creds + purge git history.
   Both migrations **paused** pending #19.

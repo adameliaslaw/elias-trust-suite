@@ -41,46 +41,55 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 1 (epic #20) — contained risk + added reproducing tests. All #20
-checklist items done; one PR opened off `main` (branch `claude/phase1-contain-risk-ov083u`).
+**Session that just ran:** Phase 2 (epic #21) — rebuilt IOLTA's accounting model. All #21 checklist
+items done; one PR opened off `main` (branch `claude/phase2-iolta-model-xygajy`). Criticals #11 and #15
+closed by the PR.
+
+**Decision context:** #19 **Decision 3 (system of record) is still unratified** (no sign-off comment,
+box unchecked). Per plan, Phase 2 built the **decision-safe** structure: single-firm/multi-account now,
+modeled so multi-tenant SaaS stays open (Decision 1's recommended default). No invoice/payment
+"system of record" was assumed. Ratifying 3 later needs no schema change.
 
 **What landed (with commit SHAs):**
-- `daed6fa` — **flaky billable test fixed** (`test/audit.test.js`): structural leaf-value check instead
-  of the `"300"` substring that collided with SHA-256 hex. **CI is now deterministic** (verified 10/10).
-- `1a5f2ce` — **IOLTA PDF import (#12)**: `apps/iolta/src/pdf.ts` uses the `pdf-parse@2.4.5` `PDFParse`
-  class; real-PDF fixture test (`test/pdf.test.ts`). Also fixes the iolta `start` script (tsx).
-- `f879c5b` — **statement-balance / false-"Reconciled" (#13)**: logic extracted to
-  `apps/iolta/src/reconciliation.ts` with a status of `incomplete|reconciled|discrepancy`; only a real
-  reconciliation seals `reconciliation.completed`. Also: Manual Entry modal wired, duplicate `<Chatbot/>`
-  removed. Reproducing test `test/reconciliation.test.ts`.
-- `0dd7cd1` — **`toCents` scientific-notation crash**: `dec()` expands exponential form; magnitude guard
-  moved to cents conversion (`iolta/src/money.ts`).
-- `6e51d15` — **Matterproof client-facing exports disabled (#18 stopgap)**: `apps/billable/src/exports-gate.js`
-  gates LEDES/HTML/LawPay/Clio on both CLI and HTTP; off unless `BILLABLE_ALLOW_CLIENT_EXPORTS=1`.
-  Docs-honesty edits (billable README, iolta header) in the docs commit.
+- `c2c1c18` — the whole Phase 2 rebuild:
+  - **#11 independent streams** — `src/model.ts` defines four distinct stream types (BankTransaction /
+    BookTransaction / StatementPeriod / MatchRecord). `src/reconciliation.ts` gains `reconcileStreams()`:
+    the three legs come from different streams; outstanding-vs-cleared is decided by the MATCH stream, and
+    a **bank line never booked surfaces as a discrepancy** (`unrecordedBankItems`) — impossible before.
+    Legacy `computeReconciliations()` kept as a thin adapter so Phase 1's tests stay green.
+  - **#15 tenancy** — firms→memberships→trust-accounts; period doc IDs are account/uid-scoped
+    (`{accountId}__{month}` via `periodDocId`), no hardcoded `iolta-trust`. `firestore.rules` scoped +
+    firms/memberships/trustAccounts validators. **Rules still UNDEPLOYED** (Phase 8 / #27).
+  - **Idempotent imports** — `src/imports.ts`: deterministic CSV/sheet parse *before* the AI fallback;
+    fingerprint dedup (re-import = no-op); case-insensitive client dedup; type/sign-contradiction rejection.
+  - **Ledger fixes** — `src/ledger.ts`: filtered running balance carries the opening balance forward
+    (no restart-at-zero); chronological overdraw validation with provenance.
+  - `App.tsx` wired to all of the above; `packages/audit` `TrustImportConfirmedPayload` gained optional
+    `duplicatesSkipped`/`rejected` counts.
+- New tests: `test/model.test.ts`, `test/imports.test.ts`, `test/ledger.test.ts`, plus #11 cases appended
+  to `test/reconciliation.test.ts`. All wired into the iolta `test` script.
 
-**State of the repo:** all suites green (`npm test` exit 0); typecheck clean. Backlog #11–#27 still open
-except #12/#13 (closed by the PR) and #20 (epic, closed by the PR). #19 rewritten as a decision memo.
+**State of the repo:** all suites green (`npm test` exit 0 across every workspace); typecheck clean.
+Backlog: #11/#15 closed by this PR; #12/#13/#20 closed in Phase 1. #19 unratified (decision memo).
 
-**Next session → Phase 2 (epic #21): rebuild IOLTA's accounting model.** Depends on Phase 0 (#19) product
-decisions AND the now-complete Phase 1. **Check #19 first** — Phase 2 needs the "system of record" and
-"single-firm vs multi-tenant" calls (the memo recommends single-firm/multi-account now, which keeps SaaS
-open). If the owner hasn't signed off, build the general firms→accounts hierarchy anyway (decision-safe).
-Start with:
-1. **#11** — separate bank / book / statement / match streams so the three legs are independently sourced
-   (ends the circular reconciliation). The Phase 1 `reconciliation.ts` still derives all legs from one
-   `transactions` array — Phase 2 replaces that.
-2. **#15** — firms → memberships → trust accounts → account-scoped monthly periods; remove hardcoded
-   `iolta-trust`; uid/account-scoped doc IDs + Firestore rules.
-3. Atomic + idempotent imports (deterministic CSV/XLS parse before AI fallback; dedupe); reject
-   type/sign contradictions; fix filtered running balances restarting at zero.
+**Next session → Phase 3 (epic #22): reconciliation lifecycle + 7-year retention** (draft→attest→
+finalize→lock; immutable retained packet). Now unblocked by Phase 2. Start points:
+1. **#14** — no reconciliation close/attest/lock; history is mutable. Build the lifecycle state machine
+   on top of the new streams: a finalized month freezes its bank/book/statement/match inputs + the
+   computed legs into a retained, hash-chained packet (use `@elias/audit`).
+2. 7-year retention of the finalized packet; a locked month rejects further edits to its inputs.
+3. Consider persisting the four streams as real Firestore collections (today `reconciliation.ts` has a
+   legacy adapter deriving bank/match from each book row's `clearDate`; the independent-stream core is
+   ready for genuine bank-statement-line ingestion whenever the UI grows a bank-import surface).
 
-**Gotchas:**
+**Gotchas (carried forward + new):**
 - `npm ci` then `npm run build --workspace @elias/money --workspace @elias/audit` before app tests
   (apps depend on built `dist/`).
 - **Do NOT `git checkout apps/billable/bin/billable.js` to drop a `chmod +x` mode diff** — it also reverts
-  content edits (bit me this session). Use `git update-index --chmod=-x` / `chmod 644` instead, or just
-  leave the mode diff and don't stage it. HEAD mode is `100644`.
+  content. Use `chmod 644` / `git update-index --chmod=-x`. HEAD mode is `100644`. (Hit again this session;
+  `chmod 644` cleared it.)
 - Lockfile must keep `grep -c msh.team package-lock.json` = 0.
-- iolta reconciliation logic now lives in `src/reconciliation.ts` (pure, unit-tested) — extend it there,
-  not back inside the `App.tsx` `useMemo`.
+- iolta reconciliation logic lives in `src/reconciliation.ts` (`reconcileStreams` core + legacy adapter);
+  domain types in `src/model.ts`; imports in `src/imports.ts`; ledger math in `src/ledger.ts`. Extend
+  those pure modules, not the `App.tsx` `useMemo`/effects.
+- iolta Firestore rules (`firestore.rules`) are written but **undeployed** — deployment is Phase 8 / #27.
