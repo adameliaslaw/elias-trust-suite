@@ -12,7 +12,7 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "pretest": "npm run build --workspace @elias/money --workspace @elias/audit --if-present",
-    "test": "tsx test/money.test.ts && tsx test/audit.test.ts && tsx test/reconciliation.test.ts && tsx test/pdf.test.ts",
+    "test": "tsx test/money.test.ts && tsx test/audit.test.ts && tsx test/reconciliation.test.ts && tsx test/model.test.ts && tsx test/imports.test.ts && tsx test/ledger.test.ts && tsx test/pdf.test.ts",
     "typecheck": "tsc --noEmit",
     "pretypecheck": "npm run build --workspace @elias/money --workspace @elias/audit --if-present",
     "prebuild": "npm run build --workspace @elias/money --workspace @elias/audit --if-present"

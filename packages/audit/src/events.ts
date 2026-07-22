@@ -278,6 +278,10 @@ export interface TrustImportConfirmedPayload {
   disbursementsCents: string;
   source: string;
   actor: string;
+  /** Rows skipped as already-imported duplicates (idempotent import, #21). */
+  duplicatesSkipped?: number;
+  /** Rows rejected for a type/amount-sign contradiction (#21). */
+  rejected?: number;
 }
 
 export interface AuditEventPayloads {

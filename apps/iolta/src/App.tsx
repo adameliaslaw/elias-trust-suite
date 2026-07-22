@@ -24,6 +24,16 @@ import { Client, Transaction, Reconciliation, RPCViolation } from './types';
 import { toCents, fromCents } from './money';
 import { appendAuditEvent, flushAuditQueue, verifyAuditChain } from './audit';
 import { computeReconciliations } from './reconciliation';
+import { defaultAccountId, periodDocId } from './model';
+import {
+  parseDelimited,
+  transactionFingerprint,
+  dedupeTransactions,
+  newClientNames,
+  signConsistencyError,
+  signedForType,
+} from './imports';
+import { buildLedgerView } from './ledger';
 import { parseBankContent } from './services/geminiService';
 import Chatbot from './components/Chatbot';
 import { motion, AnimatePresence } from 'motion/react';
@@ -181,9 +191,13 @@ export default function App() {
 
     const qStatementBalances = query(collection(db, 'statementBalances'), where('uid', '==', user.uid));
     const unsubStatementBalances = onSnapshot(qStatementBalances, (snapshot) => {
+      // Doc ids are now account-scoped ("{accountId}__{month}", issue #15), so
+      // key the reconciliation map by the document's `month` field, not its id.
       const balances: Record<string, number> = {};
       snapshot.docs.forEach(doc => {
-        balances[doc.id] = doc.data().balance;
+        const data = doc.data();
+        const monthKey = data.month ?? doc.id; // fall back to legacy bare-month ids
+        balances[monthKey] = data.balance;
       });
       setStatementBalances(balances);
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'statementBalances'));
@@ -240,8 +254,23 @@ export default function App() {
       const errors: string[] = [];
       for (const fileData of data.files) {
         const isImage = fileData.content.startsWith('IMAGE_DATA:');
-        const extracted = await parseBankContent(fileData.content, isImage);
-        
+
+        // Deterministic FIRST: a clean CSV/XLS (the server exports sheets to CSV)
+        // is parsed exactly by the machine — no AI, no nondeterminism. The AI
+        // extractor is only the fallback for content this parser can't structure
+        // (images, prose PDFs, or an unrecognized layout).
+        let extracted: Partial<Transaction>[] = [];
+        if (!isImage) {
+          const det = parseDelimited(fileData.content);
+          if (det.recognized && det.rows.length > 0) {
+            extracted = det.rows;
+            errors.push(...det.errors);
+          }
+        }
+        if (extracted.length === 0) {
+          extracted = await parseBankContent(fileData.content, isImage);
+        }
+
         for (const tx of extracted) {
           const txErrors = validateTransaction(tx);
           if (txErrors.length > 0) {
@@ -269,47 +298,72 @@ export default function App() {
     if (!user) return;
     try {
       const actor = actorFor(user);
-      const createdClients: { clientId: string; name: string }[] = [];
-      for (const tx of pendingTransactions) {
-        let clientId = tx.clientId;
-        let clientName = tx.clientName || "Unassigned";
 
-        // If client doesn't exist, create it or find it
-        if (tx.clientName && tx.clientName !== "Unassigned") {
-          const existingClient = clients.find(c => c.name.toLowerCase() === tx.clientName?.toLowerCase());
-          if (existingClient) {
-            clientId = existingClient.id;
-            clientName = existingClient.name;
-          } else {
-            const clientRef = await addDoc(collection(db, 'clients'), {
-              name: tx.clientName,
-              balance: 0,
-              uid: user.uid,
-              createdAt: serverTimestamp()
-            });
-            clientId = clientRef.id;
-            createdClients.push({ clientId, name: clientName });
+      // 1. Enforce the sign/type invariant at the import layer (not just the
+      //    manual modal): a row whose declared type contradicts its amount sign
+      //    is rejected, never silently coerced into a fabricated transaction.
+      const rejected: string[] = [];
+      const validRows = pendingTransactions
+        .filter(tx => {
+          const type = (tx.type as 'receipt' | 'disbursement') ?? 'receipt';
+          const err = signConsistencyError(type, tx.amount ?? 0);
+          if (err) {
+            rejected.push(`${tx.description || tx.date || 'row'}: ${err}`);
+            return false;
           }
-        }
+          return true;
+        })
+        // Normalize amount sign from type (idempotent for already-signed rows).
+        .map(tx => ({ ...tx, amount: signedForType((tx.type as 'receipt' | 'disbursement') ?? 'receipt', tx.amount ?? 0) }));
 
+      // 2. Idempotent import: skip rows already present (by fingerprint), so
+      //    re-running the same import is a no-op. Dedupes within the batch too.
+      const existingFingerprints = new Set(transactions.map(transactionFingerprint));
+      const { fresh, duplicates } = dedupeTransactions(validRows, existingFingerprints);
+
+      // 3. Create each NEW client once (case-insensitive), never N records for a
+      //    client named on N rows. Build a name → id map for assignment.
+      const namesToCreate = newClientNames(fresh, clients.map(c => c.name));
+      const nameToId = new Map<string, string>(
+        clients.map(c => [c.name.toLowerCase(), c.id] as const),
+      );
+      const createdClients: { clientId: string; name: string }[] = [];
+      for (const name of namesToCreate) {
+        const clientRef = await addDoc(collection(db, 'clients'), {
+          name,
+          balance: 0,
+          uid: user.uid,
+          createdAt: serverTimestamp()
+        });
+        nameToId.set(name.toLowerCase(), clientRef.id);
+        createdClients.push({ clientId: clientRef.id, name });
+      }
+
+      // 4. Persist only the fresh, sign-valid rows.
+      for (const tx of fresh) {
+        const rawName = tx.clientName?.trim();
+        const hasClient = !!rawName && rawName.toLowerCase() !== 'unassigned';
+        const clientId = hasClient ? (nameToId.get(rawName!.toLowerCase()) ?? 'unassigned') : 'unassigned';
+        const clientName = hasClient ? rawName! : 'Unassigned';
         const month = tx.date ? format(parseISO(tx.date), 'yyyy-MM') : format(new Date(), 'yyyy-MM');
 
         await addDoc(collection(db, 'transactions'), {
           ...tx,
-          clientId: clientId || 'unassigned',
+          clientId,
           clientName,
           month,
           uid: user.uid,
           createdAt: serverTimestamp(),
           isOutstanding: tx.type === 'disbursement' && !tx.clearDate,
-          rpcViolations: detectRPCViolations(tx)
+          rpcViolations: detectRPCViolations({ ...tx, clientId })
         });
       }
-      // One BATCH audit event, not one per row: a statement import is a
-      // single act, and N sequential CAS appends would multiply contention.
-      // Exact integer-cent totals via the money bridge — never floats.
+
+      // One BATCH audit event, not one per row: a statement import is a single
+      // act, and N sequential CAS appends would multiply contention. Exact
+      // integer-cent totals via the money bridge — never floats.
       let receiptsCents = 0, disbursementsCents = 0;
-      for (const tx of pendingTransactions) {
+      for (const tx of fresh) {
         const cents = toCents(tx.amount ?? 0);
         if (tx.type === 'disbursement') disbursementsCents += Math.abs(cents);
         else receiptsCents += cents;
@@ -318,12 +372,21 @@ export default function App() {
         await appendAuditEvent(user.uid, 'trust.client_created', { clientId: c.clientId, name: c.name, actor });
       }
       await appendAuditEvent(user.uid, 'trust.import_confirmed', {
-        rowCount: pendingTransactions.length,
+        rowCount: fresh.length,
+        duplicatesSkipped: duplicates.length,
+        rejected: rejected.length,
         receiptsCents: String(receiptsCents),
         disbursementsCents: String(disbursementsCents),
         source: 'review',
         actor
       });
+
+      // Surface why rows didn't import (duplicates skipped, contradictions rejected).
+      const notices: string[] = [];
+      if (duplicates.length) notices.push(`${duplicates.length} duplicate row(s) skipped (already imported).`);
+      notices.push(...rejected);
+      setValidationErrors(notices);
+
       setIsReviewModalOpen(false);
       setPendingTransactions([]);
     } catch (error) {
@@ -456,6 +519,7 @@ export default function App() {
   useEffect(() => {
     if (!user || reconciliationSummary.length === 0) return;
 
+    const accountId = defaultAccountId(user.uid);
     const persistReconciliations = async () => {
       for (const recon of reconciliationSummary) {
         const existing = reconciliations.find(r => r.month === recon.month);
@@ -470,8 +534,9 @@ export default function App() {
         if (unchanged) continue;
 
         try {
-          await setDoc(doc(db, 'reconciliations', recon.month), {
+          await setDoc(doc(db, 'reconciliations', periodDocId(accountId, recon.month)), {
             month: recon.month,
+            accountId,
             bankBalance: recon.statementBalance,
             bookBalance: recon.bookBalance,
             clientBalanceTotal: recon.clientBalanceTotal,
@@ -492,8 +557,8 @@ export default function App() {
           // Exact cents; a 1-cent difference is recorded, not tolerated.
           const monthDate = parseISO(`${recon.month}-01`);
           await appendAuditEvent(user.uid, 'reconciliation.completed', {
-            reconciliationId: `${user.uid}:${recon.month}`,
-            accountId: 'iolta-trust',
+            reconciliationId: `${accountId}:${recon.month}`,
+            accountId,
             periodStart: format(startOfMonth(monthDate), 'yyyy-MM-dd'),
             periodEnd: format(endOfMonth(monthDate), 'yyyy-MM-dd'),
             bookBalanceCents: String(toCents(recon.bookBalance)),
@@ -516,8 +581,13 @@ export default function App() {
     if (!targetMonth || !user) return;
 
     try {
-      await setDoc(doc(db, 'statementBalances', targetMonth), {
+      // Account-scoped doc id (issue #15): "{accountId}__{month}", never a bare
+      // month that the first writer would own for every user.
+      const accountId = defaultAccountId(user.uid);
+      await setDoc(doc(db, 'statementBalances', periodDocId(accountId, targetMonth)), {
         balance: newStatementBalance,
+        accountId,
+        month: targetMonth,
         uid: user.uid,
         updatedAt: serverTimestamp()
       });
@@ -1146,34 +1216,25 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
-                    {transactions
-                      .filter(tx => tx.clientId === selectedClient.id)
-                      .filter(tx => {
-                        if (modalFilterType === 'receipt') return tx.type === 'receipt';
-                        if (modalFilterType === 'disbursement') return tx.type === 'disbursement';
-                        return true;
-                      })
-                      .filter(tx => {
-                        if (modalDateRange.start && tx.date < modalDateRange.start) return false;
-                        if (modalDateRange.end && tx.date > modalDateRange.end) return false;
-                        return true;
-                      })
-                      .sort((a, b) => a.date.localeCompare(b.date))
-                      .reduce((acc: any[], tx) => {
-                        // Integer-cents running balance (no float accumulation).
-                        const prevCents = acc.length > 0 ? acc[acc.length - 1].runningBalanceCents : 0;
-                        const runningBalanceCents = prevCents + toCents(tx.amount);
-                        acc.push({ ...tx, runningBalanceCents, runningBalance: fromCents(runningBalanceCents) });
-                        return acc;
-                      }, [])
-                      .map((tx, i) => (
+                    {/* Running balance CARRIES the opening balance forward
+                        (issue #21): filtering to a date range no longer restarts
+                        the balance at zero — the first visible row already
+                        reflects everything prior. Integer-cents throughout. */}
+                    {buildLedgerView(
+                      transactions.filter(tx => tx.clientId === selectedClient.id),
+                      {
+                        start: modalDateRange.start || undefined,
+                        end: modalDateRange.end || undefined,
+                        type: modalFilterType,
+                      },
+                    ).rows.map(({ tx, runningBalance }, i) => (
                         <tr key={i} className="text-sm">
                           <td className="py-4 text-gray-600">{tx.date}</td>
                           <td className="py-4 text-gray-900 font-medium">{tx.description}</td>
                           <td className="py-4 text-gray-600">{tx.checkNumber || '-'}</td>
                           <td className="py-4 text-right text-red-600">{tx.amount < 0 ? `$${Math.abs(tx.amount).toFixed(2)}` : ''}</td>
                           <td className="py-4 text-right text-green-600">{tx.amount > 0 ? `$${tx.amount.toFixed(2)}` : ''}</td>
-                          <td className="py-4 text-right font-bold text-gray-900">${tx.runningBalance.toFixed(2)}</td>
+                          <td className="py-4 text-right font-bold text-gray-900">${runningBalance.toFixed(2)}</td>
                         </tr>
                       ))}
                   </tbody>
