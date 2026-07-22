@@ -8,6 +8,7 @@ export type {
   InvoiceSentPayload,
   PayrollPaymentPayload,
   ReconciliationCompletedPayload,
+  ReconciliationReopenedPayload,
 } from './events.js';
 export { InMemoryStorage } from './storage.js';
 export type { AuditStorage } from './storage.js';

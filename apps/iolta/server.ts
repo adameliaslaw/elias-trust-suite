@@ -225,31 +225,49 @@ async function startServer() {
           let content = "";
           const fileExtension = path.extname(file.originalname).toLowerCase();
 
+          // Read the raw bytes ONCE, then (a) content-hash them and (b) RETAIN a
+          // copy before extraction. A finalized reconciliation packet must be
+          // reproducible byte-for-byte (#22, Rule 1:21-6), so the source statement
+          // cannot be discarded the moment we extract text from it — the pre-Phase-3
+          // code always `fs.unlink`ed it. Hosting stays local-first (#19 Decision 2):
+          // the copy lives on disk beside the app, no cloud dependency.
+          const dataBuffer = fs.readFileSync(file.path);
+          const sha256 = crypto.createHash("sha256").update(dataBuffer).digest("hex");
+          const retainedDir = path.join("uploads", "retained");
+          fs.mkdirSync(retainedDir, { recursive: true });
+          // Content-addressed: re-uploading the same statement overwrites the same
+          // path with identical bytes (idempotent), never a second copy.
+          const retainedPath = path.join(retainedDir, `${sha256}${fileExtension}`);
+          if (!fs.existsSync(retainedPath)) fs.writeFileSync(retainedPath, dataBuffer);
+
           if (fileExtension === ".pdf") {
-            const dataBuffer = fs.readFileSync(file.path);
             content = await extractPdfText(dataBuffer);
           } else if (fileExtension === ".xlsx" || fileExtension === ".xls") {
-            const workbook = xlsx.readFile(file.path);
+            const workbook = xlsx.read(dataBuffer);
             const sheetNames = workbook.SheetNames;
             sheetNames.forEach(sheetName => {
               const worksheet = workbook.Sheets[sheetName];
               content += xlsx.utils.sheet_to_csv(worksheet) + "\n";
             });
           } else if (fileExtension === ".csv") {
-            content = fs.readFileSync(file.path, 'utf-8');
+            content = dataBuffer.toString("utf-8");
           } else if (['.jpg', '.jpeg', '.png'].includes(fileExtension)) {
             // For images, we'll send the base64 to the frontend to handle with Gemini Vision
-            const base64 = fs.readFileSync(file.path, { encoding: 'base64' });
-            content = `IMAGE_DATA:${base64}:${file.mimetype}`;
+            content = `IMAGE_DATA:${dataBuffer.toString("base64")}:${file.mimetype}`;
           }
 
           results.push({
             name: file.originalname,
             type: fileExtension,
-            content: content
+            content: content,
+            // The content hash + size the client records so a finalized packet
+            // can cite the exact retained source it reproduces from.
+            sha256,
+            bytes: dataBuffer.length
           });
         } finally {
-          // Always remove the temp file, even when parsing throws (issue #3).
+          // Remove only the TEMP upload (issue #3). The retained content-addressed
+          // copy under uploads/retained/ persists for packet reproduction.
           fs.unlink(file.path, () => {});
         }
       }
@@ -263,6 +281,24 @@ async function startServer() {
       }
       res.status(500).json({ error: "Failed to process files" });
     }
+  });
+
+  // API Route: fetch a RETAINED source statement by content hash (#22). Lets a
+  // finalized packet reproduce byte-for-byte from the exact document it cites.
+  // Content-addressed and hex-validated, so the param can never traverse paths.
+  // Local-first posture (#19 Decision 2): the hash is the capability; retained
+  // copies live on the app's own disk, not a cloud store.
+  app.get("/api/source/:hash", requireAuth, (req: any, res) => {
+    const hash = String(req.params.hash);
+    if (!/^[a-f0-9]{64}$/.test(hash)) {
+      return res.status(400).json({ error: "Invalid source hash" });
+    }
+    const dir = path.join("uploads", "retained");
+    const match = fs.existsSync(dir)
+      ? fs.readdirSync(dir).find(f => f.startsWith(hash))
+      : undefined;
+    if (!match) return res.status(404).json({ error: "Retained source not found" });
+    return res.sendFile(path.resolve(dir, match));
   });
 
   // API Route: AI extraction of bank statement text/images (issue #4)

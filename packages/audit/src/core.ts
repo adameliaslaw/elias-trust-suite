@@ -28,6 +28,7 @@ export type {
   PayrollRunCreatedPayload,
   PayrollRunFinalizedPayload,
   ReconciliationCompletedPayload,
+  ReconciliationReopenedPayload,
   SalesImportedPayload,
   SalesTaxRemittedPayload,
   SettingsChangedPayload,
