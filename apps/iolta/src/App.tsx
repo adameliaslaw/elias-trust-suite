@@ -17,14 +17,29 @@ import {
 import { 
   Upload, FileText, CheckCircle, AlertTriangle, Users, 
   Plus, Trash2, ChevronRight, Search, LogOut, Loader2,
-  Calendar, DollarSign, Clock, Filter, ArrowUpDown, X as LucideX, Check
+  Calendar, DollarSign, Clock, Filter, ArrowUpDown, X as LucideX, Check, Lock
 } from 'lucide-react';
 import { format, parseISO, startOfMonth, endOfMonth, isBefore, isAfter, isEqual, subDays, addDays } from 'date-fns';
 import { Client, Transaction, Reconciliation, RPCViolation } from './types';
 import { toCents, fromCents } from './money';
 import { appendAuditEvent, flushAuditQueue, verifyAuditChain } from './audit';
-import { computeReconciliations } from './reconciliation';
+import { computeReconciliations, legacyStreams } from './reconciliation';
 import { defaultAccountId, periodDocId } from './model';
+import {
+  buildFinalizedPacket,
+  reconciliationCompletedPayload,
+  canonicalizeInputs,
+  packetDocId,
+  assertPeriodMutable,
+  LockedPeriodError,
+  reopenForAmendment,
+  periodExceptions,
+  renderPacketDocument,
+  DEFAULT_ATTESTATION_STATEMENT,
+  RECON_AUTHORITY,
+  type FrozenInputs,
+  type SourceDocument,
+} from './lifecycle';
 import {
   parseDelimited,
   transactionFingerprint,
@@ -105,6 +120,18 @@ export default function App() {
 
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
   const [pendingTransactions, setPendingTransactions] = useState<Partial<Transaction>[]>([]);
+  // Retained source statements (server keeps the file; we keep name+hash+bytes)
+  // so a finalized packet can prove it reproduces from these exact documents.
+  const [pendingSources, setPendingSources] = useState<SourceDocument[]>([]);
+  const [sourceStatements, setSourceStatements] = useState<any[]>([]);
+
+  // Reconciliation finalize / reopen (lifecycle #14).
+  const [isFinalizeModalOpen, setIsFinalizeModalOpen] = useState(false);
+  const [finalizeMonth, setFinalizeMonth] = useState<string>('');
+  const [finalizeMode, setFinalizeMode] = useState<'finalize' | 'reopen'>('finalize');
+  const [attestChecked, setAttestChecked] = useState(false);
+  const [amendReason, setAmendReason] = useState('');
+  const [finalizing, setFinalizing] = useState(false);
 
   // Tamper-evident audit chain status (verify-on-open). 'failed' renders a
   // blocking banner: a broken chain means the trust records cannot be relied
@@ -202,13 +229,41 @@ export default function App() {
       setStatementBalances(balances);
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'statementBalances'));
 
+    const qSourceStatements = query(collection(db, 'sourceStatements'), where('uid', '==', user.uid));
+    const unsubSourceStatements = onSnapshot(qSourceStatements, (snapshot) => {
+      setSourceStatements(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'sourceStatements'));
+
     return () => {
       unsubClients();
       unsubTransactions();
       unsubReconciliations();
       unsubStatementBalances();
+      unsubSourceStatements();
     };
   }, [user]);
+
+  // A month is LOCKED once its reconciliation is finalized (lifecycle #14).
+  // Every transaction mutation checks this set before writing.
+  const lockedMonths = useMemo(
+    () => new Set(reconciliations.filter(r => r.lifecycleStatus === 'finalized').map(r => r.month)),
+    [reconciliations]
+  );
+
+  // Guard a transaction mutation against locked periods; alerts and returns
+  // false if the write would touch a finalized month (its date or a new date).
+  const ensureUnlocked = (dates: { date?: string; toDate?: string }): boolean => {
+    try {
+      assertPeriodMutable(dates, lockedMonths);
+      return true;
+    } catch (e) {
+      if (e instanceof LockedPeriodError) {
+        alert(e.message);
+        return false;
+      }
+      throw e;
+    }
+  };
 
   // --- Validation Logic ---
   const validateTransaction = (tx: any): string[] => {
@@ -281,8 +336,16 @@ export default function App() {
         }
       }
 
+      // Capture the retained-source metadata (server keeps the bytes and
+      // returns a content hash per file) so a later finalize can cite the
+      // exact documents this import came from (#22).
+      const sources: SourceDocument[] = (data.files as any[])
+        .filter(f => typeof f.sha256 === 'string' && f.sha256.length > 0)
+        .map(f => ({ name: f.name, sha256: f.sha256, bytes: typeof f.bytes === 'number' ? f.bytes : 0 }));
+
       setValidationErrors(errors);
       setPendingTransactions(allExtracted);
+      setPendingSources(sources);
       setIsReviewModalOpen(true);
       setUploadProgress("Ready for review");
     } catch (error) {
@@ -339,13 +402,23 @@ export default function App() {
         createdClients.push({ clientId: clientRef.id, name });
       }
 
-      // 4. Persist only the fresh, sign-valid rows.
+      // 4. Persist only the fresh, sign-valid rows — but NEVER into a locked
+      //    (finalized) month. A row dated in a finalized period is refused, not
+      //    silently added to an immutable record (#14).
+      const lockedSkipped: string[] = [];
+      const importedMonths = new Set<string>();
       for (const tx of fresh) {
         const rawName = tx.clientName?.trim();
         const hasClient = !!rawName && rawName.toLowerCase() !== 'unassigned';
         const clientId = hasClient ? (nameToId.get(rawName!.toLowerCase()) ?? 'unassigned') : 'unassigned';
         const clientName = hasClient ? rawName! : 'Unassigned';
         const month = tx.date ? format(parseISO(tx.date), 'yyyy-MM') : format(new Date(), 'yyyy-MM');
+
+        if (lockedMonths.has(month)) {
+          lockedSkipped.push(`${tx.date} ${tx.description ?? ''} — ${month} is finalized/locked.`);
+          continue;
+        }
+        importedMonths.add(month);
 
         await addDoc(collection(db, 'transactions'), {
           ...tx,
@@ -357,6 +430,27 @@ export default function App() {
           isOutstanding: tx.type === 'disbursement' && !tx.clearDate,
           rpcViolations: detectRPCViolations({ ...tx, clientId })
         });
+      }
+
+      // 4b. Retain the SOURCE statements behind this import (server kept the
+      //     bytes; we record name + content hash + which months they cover) so
+      //     a finalized packet reproduces from these exact documents (#22).
+      const accountId = defaultAccountId(user.uid);
+      const coveredMonths = Array.from(importedMonths).sort();
+      for (const src of pendingSources) {
+        try {
+          await setDoc(doc(db, 'sourceStatements', `${accountId}__${src.sha256}`), {
+            accountId,
+            name: src.name,
+            sha256: src.sha256,
+            bytes: src.bytes,
+            months: coveredMonths,
+            uid: user.uid,
+            importedAt: serverTimestamp(),
+          });
+        } catch (e) {
+          console.warn('failed to record source statement', e);
+        }
       }
 
       // One BATCH audit event, not one per row: a statement import is a single
@@ -384,11 +478,13 @@ export default function App() {
       // Surface why rows didn't import (duplicates skipped, contradictions rejected).
       const notices: string[] = [];
       if (duplicates.length) notices.push(`${duplicates.length} duplicate row(s) skipped (already imported).`);
+      if (lockedSkipped.length) notices.push(`${lockedSkipped.length} row(s) skipped — dated in a finalized/locked month:`, ...lockedSkipped);
       notices.push(...rejected);
       setValidationErrors(notices);
 
       setIsReviewModalOpen(false);
       setPendingTransactions([]);
+      setPendingSources([]);
     } catch (error) {
       console.error("Failed to save reviewed transactions", error);
     }
@@ -511,11 +607,17 @@ export default function App() {
     [transactions, clients, statementBalances]
   );
 
-  // --- Persist Reconciliation Snapshots (audit #7) ---
+  // --- Persist DRAFT Reconciliation Snapshots (lifecycle #14) ---
   // Writes the computed three-way reconciliation for each month to
-  // /reconciliations/{month} so the monthly records Rule 1:21-6 expects
-  // actually exist. Writes are idempotent: a month is only written when its
-  // computed values changed, which also prevents render/write loops.
+  // /reconciliations/{accountId__month} as a DRAFT so the current state is
+  // visible and queryable. Two deliberate changes from Phase 2:
+  //   1. A FINALIZED (locked) month is never touched — its record is immutable
+  //      and must not be silently recomputed or overwritten.
+  //   2. This effect NO LONGER emits `reconciliation.completed`. That compliance
+  //      event is sealed ONLY by an explicit attorney attest + finalize
+  //      (handleFinalizeMonth), never auto-emitted on a debounce (EVALUATION M2,
+  //      pairs with #13). A month that merely computes as reconciled seals nothing.
+  // Writes stay idempotent (only on change) to prevent render/write loops.
   useEffect(() => {
     if (!user || reconciliationSummary.length === 0) return;
 
@@ -523,7 +625,10 @@ export default function App() {
     const persistReconciliations = async () => {
       for (const recon of reconciliationSummary) {
         const existing = reconciliations.find(r => r.month === recon.month);
+        // Never overwrite a finalized/locked month's immutable record.
+        if (existing?.lifecycleStatus === 'finalized') continue;
         const unchanged = existing !== undefined &&
+          existing.lifecycleStatus === 'draft' &&
           toCents(existing.bankBalance) === toCents(recon.statementBalance) &&
           toCents(existing.bookBalance) === toCents(recon.bookBalance) &&
           toCents(existing.clientBalanceTotal) === toCents(recon.clientBalanceTotal) &&
@@ -544,27 +649,12 @@ export default function App() {
             depositsInTransitTotal: recon.depositsInTransitTotal,
             isReconciled: recon.isReconciled,
             status: recon.status,
+            // Lifecycle: a recomputed snapshot is a DRAFT. `version` carries the
+            // current working version forward (bumped by a reopen-for-amendment).
+            lifecycleStatus: 'draft',
+            version: existing?.version ?? 1,
             uid: user.uid,
             updatedAt: serverTimestamp()
-          });
-          // Only a genuinely reconciled month seals reconciliation.completed
-          // (issue #13). Incomplete (no statement balance entered) and
-          // discrepancy months persist their snapshot for the record, but must
-          // NOT emit a compliance event that was never actually performed.
-          if (recon.status !== 'reconciled') continue;
-          // The Firestore doc is latest-only (setDoc overwrites); the audit
-          // chain is the actual month-over-month HISTORY Rule 1:21-6 expects.
-          // Exact cents; a 1-cent difference is recorded, not tolerated.
-          const monthDate = parseISO(`${recon.month}-01`);
-          await appendAuditEvent(user.uid, 'reconciliation.completed', {
-            reconciliationId: `${accountId}:${recon.month}`,
-            accountId,
-            periodStart: format(startOfMonth(monthDate), 'yyyy-MM-dd'),
-            periodEnd: format(endOfMonth(monthDate), 'yyyy-MM-dd'),
-            bookBalanceCents: String(toCents(recon.bookBalance)),
-            bankBalanceCents: String(toCents(recon.statementBalance)),
-            differenceCents: String(toCents(recon.bookBalance) - toCents(recon.adjustedBankBalance)),
-            performedBy: actorFor(user)
           });
         } catch (error) {
           handleFirestoreError(error, OperationType.WRITE, 'reconciliations');
@@ -575,6 +665,163 @@ export default function App() {
     const timeoutId = setTimeout(persistReconciliations, 1500); // Debounce writes
     return () => clearTimeout(timeoutId);
   }, [reconciliationSummary, reconciliations, user]);
+
+  // --- Attest + Finalize a reconciled month (lifecycle #14) ---
+  // The DELIBERATE act that seals a month: freezes the bank/book/statement/match
+  // inputs and the computed legs into an immutable, retained, reproducible packet
+  // (@elias/audit hashing), records the attorney attestation, emits the (now
+  // self-consistent) reconciliation.completed event, and LOCKS the month.
+  const handleFinalizeMonth = async () => {
+    if (!user || !finalizeMonth) return;
+    const summary = reconciliationSummary.find(r => r.month === finalizeMonth);
+    if (!summary) return;
+
+    const exceptions = periodExceptions(summary);
+    if (exceptions.length > 0) {
+      alert('Resolve these exceptions before finalizing:\n\n' + exceptions.map(e => `• ${e.message}`).join('\n'));
+      return;
+    }
+
+    setFinalizing(true);
+    try {
+      const accountId = defaultAccountId(user.uid);
+      const actor = actorFor(user);
+      const existing = reconciliations.find(r => r.month === finalizeMonth);
+      const version = existing?.version ?? 1;
+      const amendmentReason = version > 1 ? (existing?.amendmentReason ?? amendReason.trim()) : undefined;
+      if (version > 1 && !amendmentReason) {
+        alert('This is an amendment (version > 1). A reason is required.');
+        setFinalizing(false);
+        return;
+      }
+
+      // Freeze the exact inputs that produced this month's legs (through month
+      // end), via the same legacy adapter the summary was computed from — no drift.
+      const monthEnd = format(endOfMonth(parseISO(`${finalizeMonth}-01`)), 'yyyy-MM-dd');
+      const monthTxns = transactions.filter(t => t.date <= monthEnd);
+      const streams = legacyStreams(monthTxns, clients, { [finalizeMonth]: statementBalances[finalizeMonth] });
+      const inputs: FrozenInputs = canonicalizeInputs({
+        bankTransactions: streams.bankTransactions,
+        bookTransactions: streams.bookTransactions,
+        statementPeriods: streams.statementPeriods,
+        matches: streams.matches,
+        clients: clients.map(c => ({ id: c.id, name: c.name, balance: c.balance })),
+      });
+
+      // Retained source statements covering this month (server keeps the bytes).
+      const sources: SourceDocument[] = sourceStatements
+        .filter(s => Array.isArray(s.months) && s.months.includes(finalizeMonth))
+        .map(s => ({ name: s.name, sha256: s.sha256, bytes: s.bytes }));
+
+      const finalizedAt = new Date().toISOString();
+      const attestation = {
+        attestedBy: actor,
+        attestedAt: finalizedAt,
+        statement: DEFAULT_ATTESTATION_STATEMENT,
+      };
+      const packet = buildFinalizedPacket({
+        accountId,
+        month: finalizeMonth,
+        version,
+        attestation,
+        finalizedAt,
+        finalizedBy: actor,
+        reconciliation: summary,
+        inputs,
+        sources,
+        amendmentReason,
+      });
+
+      // 1. Retain the immutable packet (create-only; never overwritten).
+      await setDoc(doc(db, 'reconciliationPackets', packetDocId(accountId, finalizeMonth, version)), {
+        ...packet,
+        uid: user.uid,
+        // A deterministic rendered artifact, retained alongside the structured
+        // packet so the exact audit document reproduces byte-for-byte.
+        document: renderPacketDocument(packet),
+        createdAt: serverTimestamp(),
+      });
+
+      // 2. Flip the period to finalized/locked on its reconciliation record.
+      await setDoc(doc(db, 'reconciliations', periodDocId(accountId, finalizeMonth)), {
+        month: finalizeMonth,
+        accountId,
+        bankBalance: summary.statementBalance,
+        bookBalance: summary.bookBalance,
+        clientBalanceTotal: summary.clientBalanceTotal,
+        outstandingChecksTotal: summary.outstandingChecksTotal,
+        depositsInTransitTotal: summary.depositsInTransitTotal,
+        isReconciled: summary.isReconciled,
+        status: summary.status,
+        lifecycleStatus: 'finalized',
+        version,
+        contentHash: packet.contentHash,
+        retentionUntil: packet.retentionUntil,
+        lockedAt: serverTimestamp(),
+        finalizedBy: actor,
+        uid: user.uid,
+        updatedAt: serverTimestamp(),
+      });
+
+      // 3. Seal the (self-consistent) compliance event — ONLY here, on the
+      //    deliberate attested finalize. bankBalanceCents is the ADJUSTED bank
+      //    balance and book − bank === difference (fixes EVALUATION M2).
+      const monthDate = parseISO(`${finalizeMonth}-01`);
+      await appendAuditEvent(user.uid, 'reconciliation.completed', reconciliationCompletedPayload(packet, {
+        reconciliationId: `${accountId}:${finalizeMonth}:v${version}`,
+        periodStart: format(startOfMonth(monthDate), 'yyyy-MM-dd'),
+        periodEnd: format(endOfMonth(monthDate), 'yyyy-MM-dd'),
+      }));
+
+      setIsFinalizeModalOpen(false);
+      setAttestChecked(false);
+      setAmendReason('');
+    } catch (error) {
+      console.error('Finalize failed', error);
+      alert(`Finalize failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setFinalizing(false);
+    }
+  };
+
+  // --- Reopen a finalized month for amendment (lifecycle #14) ---
+  // The only way out of a lock, and never silent: requires a reason, bumps the
+  // version, and returns the month to draft. The prior packet stays retained.
+  const handleReopenMonth = async () => {
+    if (!user || !finalizeMonth) return;
+    const existing = reconciliations.find(r => r.month === finalizeMonth);
+    if (!existing || existing.lifecycleStatus !== 'finalized') return;
+    if (!amendReason.trim()) {
+      alert('Reopening a finalized reconciliation requires a documented reason.');
+      return;
+    }
+    setFinalizing(true);
+    try {
+      const accountId = defaultAccountId(user.uid);
+      const next = reopenForAmendment({ status: 'finalized', version: existing.version ?? 1 }, amendReason);
+      await updateDoc(doc(db, 'reconciliations', periodDocId(accountId, finalizeMonth)), {
+        lifecycleStatus: 'draft',
+        version: next.version,
+        amendmentReason: next.reason,
+        reopenedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      await appendAuditEvent(user.uid, 'reconciliation.reopened', {
+        accountId,
+        month: finalizeMonth,
+        newVersion: next.version,
+        reason: next.reason,
+        actor: actorFor(user),
+      });
+      setIsFinalizeModalOpen(false);
+      setAmendReason('');
+    } catch (error) {
+      console.error('Reopen failed', error);
+      alert(`Reopen failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setFinalizing(false);
+    }
+  };
 
   const handleStatementBalanceSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -605,6 +852,11 @@ export default function App() {
   const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingTx || !user) return;
+
+    // Reject an edit that touches a locked month — either the row's current
+    // month or a new date that would move it into/within a finalized period (#14).
+    const beforeForLock = transactions.find(t => t.id === editingTx.id);
+    if (!ensureUnlocked({ date: beforeForLock?.date, toDate: editingTx.date })) return;
 
     try {
       const month = format(parseISO(editingTx.date), 'yyyy-MM');
@@ -637,6 +889,9 @@ export default function App() {
   };
 
   const handleDeleteTransaction = async (id: string) => {
+    const target = transactions.find(t => t.id === id);
+    // A row dated within a finalized month cannot be deleted (#14).
+    if (!ensureUnlocked({ date: target?.date })) return;
     if (!confirm("Are you sure you want to delete this transaction?")) return;
     try {
       // Deleting a ledger row is exactly what tamper-evidence exists for:
@@ -659,6 +914,8 @@ export default function App() {
   const handleManualSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTx.date || !newTx.amount || !newTx.type || !user) return;
+    // No new entries into a finalized/locked month (#14).
+    if (!ensureUnlocked({ date: newTx.date })) return;
 
     try {
       const month = format(parseISO(newTx.date), 'yyyy-MM');
@@ -701,6 +958,9 @@ export default function App() {
 
   const handleClearTransaction = async () => {
     if (!txToClear || !clearDate) return;
+    // Marking a row cleared mutates a transaction dated within its month; if
+    // that month is finalized/locked, refuse (#14).
+    if (!ensureUnlocked({ date: txToClear.date })) return;
     try {
       await updateDoc(doc(db, 'transactions', txToClear.id), {
         clearDate,
@@ -881,16 +1141,18 @@ export default function App() {
                   <div className="flex items-center justify-between mb-6">
                     <h3 className="text-xl font-bold text-gray-900">{format(parseISO(`${recon.month}-01`), 'MMMM yyyy')}</h3>
                     <div className="flex items-center gap-3">
-                      <button 
-                        onClick={() => {
-                          setTargetMonth(recon.month);
-                          setNewStatementBalance(recon.statementBalance);
-                          setIsStatementModalOpen(true);
-                        }}
-                        className="text-xs font-bold text-indigo-600 hover:underline"
-                      >
-                        Set Statement Balance
-                      </button>
+                      {!lockedMonths.has(recon.month) && (
+                        <button
+                          onClick={() => {
+                            setTargetMonth(recon.month);
+                            setNewStatementBalance(recon.statementBalance);
+                            setIsStatementModalOpen(true);
+                          }}
+                          className="text-xs font-bold text-indigo-600 hover:underline"
+                        >
+                          Set Statement Balance
+                        </button>
+                      )}
                       <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
                         recon.status === 'reconciled' ? 'bg-green-100 text-green-700'
                           : recon.status === 'incomplete' ? 'bg-amber-100 text-amber-700'
@@ -901,6 +1163,37 @@ export default function App() {
                           : recon.status === 'incomplete' ? 'Incomplete'
                           : 'Out of Balance'}
                       </div>
+                      {/* Lifecycle #14: finalize/lock control, or locked badge + reopen. */}
+                      {(() => {
+                        const periodDoc = reconciliations.find(r => r.month === recon.month);
+                        const finalized = periodDoc?.lifecycleStatus === 'finalized';
+                        const attestable = periodExceptions(recon).length === 0;
+                        if (finalized) {
+                          return (
+                            <div className="flex items-center gap-2">
+                              <span className="flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold uppercase bg-gray-800 text-white" title={`Retained through ${periodDoc?.retentionUntil ?? ''} (NJ Rule 1:21-6)`}>
+                                <Lock size={12} /> Finalized v{periodDoc?.version ?? 1}
+                              </span>
+                              <button
+                                onClick={() => { setFinalizeMonth(recon.month); setFinalizeMode('reopen'); setAmendReason(''); setIsFinalizeModalOpen(true); }}
+                                className="text-xs font-bold text-amber-600 hover:underline"
+                              >
+                                Reopen to Amend
+                              </button>
+                            </div>
+                          );
+                        }
+                        return (
+                          <button
+                            disabled={!attestable}
+                            onClick={() => { setFinalizeMonth(recon.month); setFinalizeMode('finalize'); setAttestChecked(false); setAmendReason(''); setIsFinalizeModalOpen(true); }}
+                            title={attestable ? 'Attest and finalize this month' : 'Resolve exceptions before finalizing'}
+                            className={`flex items-center gap-1 text-xs font-bold px-3 py-1 rounded-lg ${attestable ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                          >
+                            <Lock size={12} /> Attest &amp; Finalize
+                          </button>
+                        );
+                      })()}
                     </div>
                   </div>
                   
@@ -1561,6 +1854,101 @@ export default function App() {
                   Cancel
                 </button>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Attest & Finalize / Reopen Modal (lifecycle #14) */}
+      <AnimatePresence>
+        {isFinalizeModalOpen && finalizeMonth && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => !finalizing && setIsFinalizeModalOpen(false)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="relative bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden p-8"
+            >
+              {finalizeMode === 'finalize' ? (
+                <>
+                  <h2 className="text-xl font-bold text-gray-900 mb-1 flex items-center gap-2">
+                    <Lock size={18} /> Attest &amp; Finalize — {format(parseISO(`${finalizeMonth}-01`), 'MMMM yyyy')}
+                  </h2>
+                  <p className="text-sm text-gray-500 mb-4">
+                    Finalizing freezes this month's bank, book, statement and match records
+                    into an immutable, retained packet (seven years, {RECON_AUTHORITY}) and
+                    locks every transaction dated within it. This is a deliberate attorney act.
+                  </p>
+                  {(() => {
+                    const existing = reconciliations.find(r => r.month === finalizeMonth);
+                    const version = existing?.version ?? 1;
+                    return version > 1 ? (
+                      <div className="mb-4">
+                        <label className="block text-xs font-bold text-gray-400 uppercase mb-1">Amendment reason (version {version})</label>
+                        <textarea
+                          value={amendReason}
+                          onChange={(e) => setAmendReason(e.target.value)}
+                          placeholder="Why is this month being re-finalized?"
+                          className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20"
+                          rows={2}
+                        />
+                      </div>
+                    ) : null;
+                  })()}
+                  <label className="flex items-start gap-2 mb-6 text-sm text-gray-700">
+                    <input type="checkbox" checked={attestChecked} onChange={(e) => setAttestChecked(e.target.checked)} className="mt-0.5" />
+                    <span>{DEFAULT_ATTESTATION_STATEMENT}</span>
+                  </label>
+                  <button
+                    disabled={!attestChecked || finalizing}
+                    onClick={handleFinalizeMonth}
+                    className={`w-full py-3 rounded-xl font-bold transition-colors ${attestChecked && !finalizing ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                  >
+                    {finalizing ? 'Finalizing…' : 'Attest & Finalize'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <h2 className="text-xl font-bold text-gray-900 mb-1">Reopen {format(parseISO(`${finalizeMonth}-01`), 'MMMM yyyy')} to Amend</h2>
+                  <p className="text-sm text-gray-500 mb-4">
+                    Reopening unlocks this month for correction. The finalized packet stays
+                    retained; your amendment produces a new version. A documented reason is required.
+                  </p>
+                  <div className="mb-6">
+                    <label className="block text-xs font-bold text-gray-400 uppercase mb-1">Reason for reopening</label>
+                    <textarea
+                      value={amendReason}
+                      onChange={(e) => setAmendReason(e.target.value)}
+                      placeholder="e.g. Bank corrected a mis-posted deposit for this period."
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500/20"
+                      rows={3}
+                      autoFocus
+                    />
+                  </div>
+                  <button
+                    disabled={!amendReason.trim() || finalizing}
+                    onClick={handleReopenMonth}
+                    className={`w-full py-3 rounded-xl font-bold transition-colors ${amendReason.trim() && !finalizing ? 'bg-amber-600 text-white hover:bg-amber-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                  >
+                    {finalizing ? 'Reopening…' : 'Reopen for Amendment'}
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                disabled={finalizing}
+                onClick={() => setIsFinalizeModalOpen(false)}
+                className="w-full mt-3 bg-gray-100 text-gray-600 py-3 rounded-xl font-bold hover:bg-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
             </motion.div>
           </div>
         )}

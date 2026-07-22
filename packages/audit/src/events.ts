@@ -25,6 +25,25 @@ export interface ReconciliationCompletedPayload {
   performedBy: string;
 }
 
+/**
+ * A finalized reconciliation was REOPENED for amendment. Reopening a locked,
+ * retained record is exactly the act an examiner must be able to see — so it is
+ * a first-class audit event, never a silent status flip. It always carries the
+ * reason and the new version the amendment will produce.
+ */
+export interface ReconciliationReopenedPayload {
+  /** Trust account / IOLTA account identifier. */
+  accountId: string;
+  /** Reconciliation period (YYYY-MM). */
+  month: string;
+  /** Version the reopened draft will finalize as (prior version + 1). */
+  newVersion: number;
+  /** Why the finalized record was reopened — required, never blank. */
+  reason: string;
+  /** Attorney/staff principal who reopened the record. */
+  actor: string;
+}
+
 export interface PayrollPaymentPayload {
   paymentId: string;
   employeeId: string;
@@ -286,6 +305,7 @@ export interface TrustImportConfirmedPayload {
 
 export interface AuditEventPayloads {
   'reconciliation.completed': ReconciliationCompletedPayload;
+  'reconciliation.reopened': ReconciliationReopenedPayload;
   'payroll.payment': PayrollPaymentPayload;
   'invoice.sent': InvoiceSentPayload;
   'auth.login_failed': AuthLoginFailedPayload;
@@ -328,6 +348,7 @@ export type AuditEventType = keyof AuditEventPayloads;
 
 export const AUDIT_EVENT_TYPES: readonly AuditEventType[] = [
   'reconciliation.completed',
+  'reconciliation.reopened',
   'payroll.payment',
   'invoice.sent',
   'auth.login_failed',

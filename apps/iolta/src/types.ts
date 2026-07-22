@@ -34,6 +34,19 @@ export interface Reconciliation {
   outstandingChecksTotal: number;
   depositsInTransitTotal: number;
   uid?: string; // Owner's Firebase Auth uid — enforced by firestore.rules
+  // --- Reconciliation lifecycle (Phase 3, #14) ---
+  // 'draft' = recomputed working snapshot; 'finalized' = attested + locked.
+  lifecycleStatus?: 'draft' | 'finalized';
+  // Working version; bumped by each reopen-for-amendment (starts at 1).
+  version?: number;
+  // Reason recorded when a finalized month was reopened (amendment provenance).
+  amendmentReason?: string;
+  // Content hash of the retained finalized packet (sha256).
+  contentHash?: string;
+  // ISO date (YYYY-MM-DD) through which the finalized packet must be retained.
+  retentionUntil?: string;
+  // Principal who finalized the month.
+  finalizedBy?: string;
 }
 
 export interface RPCViolation {

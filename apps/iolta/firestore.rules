@@ -41,6 +41,14 @@
 //   - month: string (required) - The statement month (YYYY-MM).
 //   - balance: number (required) - The ending balance from the bank statement.
 //
+// Reconciliation lifecycle (Phase 3, #14): /reconciliations docs gain a
+// `lifecycleStatus` ('draft' | 'finalized'), `version`, and `contentHash`. A
+// FINALIZED month is immutable: transactions and statementBalances dated within
+// it are refused (see periodFinalized()). /reconciliationPackets/{accountId__
+// month__vN} holds the immutable, seven-year retained packet (Rule 1:21-6),
+// create-only. /sourceStatements/{accountId__sha256} retains source-document
+// provenance (name + content hash + covered months) for packet reproduction.
+//
 // Multi-tenancy (issue #15): /firms, /memberships, /trustAccounts model the
 // firm → membership → account hierarchy. The suite runs single-firm today by
 // deriving a per-user default trust account id ("trust__{uid}"), so period doc
@@ -137,7 +145,44 @@ service cloud.firestore {
              data.clientBalanceTotal is number &&
              data.isReconciled is bool &&
              (!('outstandingChecksTotal' in data) || data.outstandingChecksTotal is number) &&
-             (!('depositsInTransitTotal' in data) || data.depositsInTransitTotal is number);
+             (!('depositsInTransitTotal' in data) || data.depositsInTransitTotal is number) &&
+             // Lifecycle fields (Phase 3, #14): a period is 'draft' or 'finalized'.
+             (!('lifecycleStatus' in data) || data.lifecycleStatus in ['draft', 'finalized']) &&
+             (!('version' in data) || (data.version is int && data.version >= 1)) &&
+             (!('contentHash' in data) || (data.contentHash is string && data.contentHash.size() == 64));
+    }
+
+    // A period is LOCKED once its reconciliation record is finalized (#14).
+    // Every trust account here is per-user (accountId = "trust__{uid}"), so a
+    // transaction's lock is decided by the reconciliation doc for its month.
+    // (Rules stay UNDEPLOYED — see header note — so client-side lifecycle.ts is
+    // the live enforcement today; this makes the lock server-authoritative on deploy.)
+    function periodDocPath(month) {
+      return /databases/$(database)/documents/reconciliations/$(('trust__' + request.auth.uid) + '__' + month);
+    }
+    function periodFinalized(month) {
+      return exists(periodDocPath(month)) &&
+             get(periodDocPath(month)).data.lifecycleStatus == 'finalized';
+    }
+
+    // The immutable, retained finalized packet (Rule 1:21-6 seven-year record).
+    function isValidReconciliationPacket(data) {
+      return hasRequiredFields(['accountId', 'month', 'version', 'status', 'contentHash', 'uid']) &&
+             data.uid is string &&
+             data.accountId is string && data.accountId.size() > 0 &&
+             data.month is string && data.month.matches("^\\d{4}-\\d{2}$") &&
+             data.version is int && data.version >= 1 &&
+             data.status == 'finalized' &&
+             data.contentHash is string && data.contentHash.size() == 64;
+    }
+
+    function isValidSourceStatement(data) {
+      return hasRequiredFields(['accountId', 'name', 'sha256', 'bytes', 'uid']) &&
+             data.uid is string &&
+             data.accountId is string && data.accountId.size() > 0 &&
+             data.name is string && data.name.size() < 300 &&
+             data.sha256 is string && data.sha256.size() == 64 &&
+             data.bytes is int && data.bytes >= 0;
     }
 
     function isValidStatementBalance(data) {
@@ -188,9 +233,14 @@ service cloud.firestore {
 
     match /transactions/{transactionId} {
       allow read: if isOwner();
-      allow create: if isOwnerWrite() && isValidTransaction(request.resource.data);
-      allow update: if isOwner() && isOwnerWrite() && isValidTransaction(request.resource.data);
-      allow delete: if isOwner();
+      // A transaction dated within a FINALIZED month cannot be created, edited,
+      // moved, or deleted (#14). An edit that changes the date must clear the
+      // lock for BOTH the old and the new month.
+      allow create: if isOwnerWrite() && isValidTransaction(request.resource.data) &&
+        !periodFinalized(request.resource.data.month);
+      allow update: if isOwner() && isOwnerWrite() && isValidTransaction(request.resource.data) &&
+        !periodFinalized(resource.data.month) && !periodFinalized(request.resource.data.month);
+      allow delete: if isOwner() && !periodFinalized(resource.data.month);
     }
 
     match /reconciliations/{periodId} {
@@ -204,11 +254,35 @@ service cloud.firestore {
 
     match /statementBalances/{periodId} {
       allow read: if isOwner();
+      // A finalized month freezes its statement balance — no create/update into it.
       allow create: if isOwnerWrite() && isValidStatementBalance(request.resource.data) &&
-        isScopedPeriodId(periodId, request.resource.data);
+        isScopedPeriodId(periodId, request.resource.data) &&
+        !periodFinalized(request.resource.data.month);
       allow update: if isOwner() && isOwnerWrite() && isValidStatementBalance(request.resource.data) &&
-        isScopedPeriodId(periodId, request.resource.data);
-      allow delete: if isOwner();
+        isScopedPeriodId(periodId, request.resource.data) &&
+        !periodFinalized(resource.data.month);
+      allow delete: if isOwner() && !periodFinalized(resource.data.month);
+    }
+
+    // ---------------------------------------------------------------
+    // Retained finalized packets (#14 / #22): the immutable, seven-year
+    // reconciliation record (Rule 1:21-6). CREATE-ONLY — like the audit chain,
+    // rules cannot verify the sha256 contentHash but they CAN make the record
+    // immutable: no update, no delete, ever. Doc id is "{accountId}__{month}__v{n}".
+    // ---------------------------------------------------------------
+    match /reconciliationPackets/{packetId} {
+      allow read: if isOwner();
+      allow create: if isOwnerWrite() && isValidReconciliationPacket(request.resource.data);
+      allow update, delete: if false;  // a finalized packet is never altered
+    }
+
+    // Retained source-statement metadata (name + content hash + covered months).
+    // Content-addressed doc id ("{accountId}__{sha256}"); re-import overwrites
+    // with identical bytes. Not deletable — it is provenance for a finalized packet.
+    match /sourceStatements/{sourceId} {
+      allow read: if isOwner();
+      allow create, update: if isOwnerWrite() && isValidSourceStatement(request.resource.data);
+      allow delete: if false;
     }
 
     // ---------------------------------------------------------------

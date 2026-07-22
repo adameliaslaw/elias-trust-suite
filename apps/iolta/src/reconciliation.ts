@@ -226,6 +226,22 @@ export function computeReconciliations(
   clients: Client[],
   statementBalances: Record<string, number>,
 ): MonthReconciliation[] {
+  return reconcileStreams(legacyStreams(transactions, clients, statementBalances));
+}
+
+/**
+ * Derive the four independent streams from the app's single checkbook register
+ * (the legacy adapter, extracted so callers that need the FROZEN inputs — the
+ * finalize/packet path, #14 — reproduce the exact streams `computeReconciliations`
+ * reconciles, with no logic drift). The register IS the book stream; each row's
+ * `clearDate` synthesizes a matching bank line; statement balances become
+ * statement periods.
+ */
+export function legacyStreams(
+  transactions: Transaction[],
+  clients: Client[],
+  statementBalances: Record<string, number>,
+): ReconInput {
   const bookTransactions: BookTransaction[] = transactions.map(tx => ({
     id: tx.id,
     accountId: '',
@@ -265,5 +281,5 @@ export function computeReconciliations(
     endingBalance: statementBalances[month],
   }));
 
-  return reconcileStreams({ bankTransactions, bookTransactions, statementPeriods, matches, clients });
+  return { bankTransactions, bookTransactions, statementPeriods, matches, clients };
 }
