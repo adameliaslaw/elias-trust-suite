@@ -22,9 +22,10 @@
 //   - description: string (optional) - A description of the transaction.
 //   - month: string (required) - The reconciliation month (YYYY-MM).
 //
-// Collection: /reconciliations/{month}
+// Collection: /reconciliations/{periodId}   (periodId = "{accountId}__{month}", issue #15)
 // Fields:
 //   - uid: string (required) - Firebase Auth uid of the owning user.
+//   - accountId: string (required) - The trust account this period belongs to.
 //   - month: string (required) - The reconciliation month (YYYY-MM).
 //   - bankBalance: number (required) - The balance per the bank statement.
 //   - bookBalance: number (required) - The balance per the firm's books (ledger).
@@ -33,10 +34,20 @@
 //   - outstandingChecksTotal: number (optional) - Total of outstanding checks at month end.
 //   - depositsInTransitTotal: number (optional) - Total of deposits in transit at month end.
 //
-// Collection: /statementBalances/{month}
+// Collection: /statementBalances/{periodId}  (periodId = "{accountId}__{month}", issue #15)
 // Fields:
 //   - uid: string (required) - Firebase Auth uid of the owning user.
+//   - accountId: string (required) - The trust account this balance belongs to.
+//   - month: string (required) - The statement month (YYYY-MM).
 //   - balance: number (required) - The ending balance from the bank statement.
+//
+// Multi-tenancy (issue #15): /firms, /memberships, /trustAccounts model the
+// firm → membership → account hierarchy. The suite runs single-firm today by
+// deriving a per-user default trust account id ("trust__{uid}"), so period doc
+// ids are account-scoped and can never collide across users or accounts — the
+// pre-Phase-2 bare-month ids ("2026-07") let the first writer own a month for
+// everyone. NOTE: these rules are still UNDEPLOYED — deployment is deferred to
+// Phase 8 / #27 (firebase deploy --only firestore:rules).
 //
 // ===============================================================
 
@@ -117,8 +128,9 @@ service cloud.firestore {
     }
 
     function isValidReconciliation(data) {
-      return hasRequiredFields(['month', 'bankBalance', 'bookBalance', 'clientBalanceTotal', 'isReconciled', 'uid']) &&
+      return hasRequiredFields(['month', 'accountId', 'bankBalance', 'bookBalance', 'clientBalanceTotal', 'isReconciled', 'uid']) &&
              data.uid is string &&
+             data.accountId is string && data.accountId.size() > 0 &&
              data.month is string && data.month.matches("^\\d{4}-\\d{2}$") &&
              data.bankBalance is number &&
              data.bookBalance is number &&
@@ -129,9 +141,38 @@ service cloud.firestore {
     }
 
     function isValidStatementBalance(data) {
-      return hasRequiredFields(['balance', 'uid']) &&
+      return hasRequiredFields(['balance', 'accountId', 'month', 'uid']) &&
              data.uid is string &&
+             data.accountId is string && data.accountId.size() > 0 &&
+             data.month is string && data.month.matches("^\\d{4}-\\d{2}$") &&
              data.balance is number;
+    }
+
+    // Account-scoped period doc id must be "{accountId}__{month}" (issue #15):
+    // ties the document key to its account so a bare month can no longer be
+    // owned by the first writer for everyone.
+    function isScopedPeriodId(periodId, data) {
+      return periodId == data.accountId + '__' + data.month;
+    }
+
+    function isValidTrustAccount(data) {
+      return hasRequiredFields(['name', 'firmId', 'uid']) &&
+             data.uid is string &&
+             data.firmId is string && data.firmId.size() > 0 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 120;
+    }
+
+    function isValidMembership(data) {
+      return hasRequiredFields(['firmId', 'uid', 'role']) &&
+             data.uid is string &&
+             data.firmId is string && data.firmId.size() > 0 &&
+             data.role in ['owner', 'admin', 'member'];
+    }
+
+    function isValidFirm(data) {
+      return hasRequiredFields(['name', 'uid']) &&
+             data.uid is string &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 200;
     }
 
     // ===============================================================
@@ -152,17 +193,48 @@ service cloud.firestore {
       allow delete: if isOwner();
     }
 
-    match /reconciliations/{month} {
+    match /reconciliations/{periodId} {
       allow read: if isOwner();
-      allow create: if isOwnerWrite() && isValidReconciliation(request.resource.data);
-      allow update: if isOwner() && isOwnerWrite() && isValidReconciliation(request.resource.data);
+      allow create: if isOwnerWrite() && isValidReconciliation(request.resource.data) &&
+        isScopedPeriodId(periodId, request.resource.data);
+      allow update: if isOwner() && isOwnerWrite() && isValidReconciliation(request.resource.data) &&
+        isScopedPeriodId(periodId, request.resource.data);
       allow delete: if isOwner();
     }
 
-    match /statementBalances/{month} {
+    match /statementBalances/{periodId} {
       allow read: if isOwner();
-      allow create: if isOwnerWrite() && isValidStatementBalance(request.resource.data);
-      allow update: if isOwner() && isOwnerWrite() && isValidStatementBalance(request.resource.data);
+      allow create: if isOwnerWrite() && isValidStatementBalance(request.resource.data) &&
+        isScopedPeriodId(periodId, request.resource.data);
+      allow update: if isOwner() && isOwnerWrite() && isValidStatementBalance(request.resource.data) &&
+        isScopedPeriodId(periodId, request.resource.data);
+      allow delete: if isOwner();
+    }
+
+    // ---------------------------------------------------------------
+    // Multi-tenant hierarchy (issue #15): firms → memberships → trust
+    // accounts. Ownership is by uid today (single firm per user); the
+    // structure is modeled so firm-membership scoping can layer on for SaaS
+    // (Decision 1 = C) without a schema change. UNDEPLOYED — see header note.
+    // ---------------------------------------------------------------
+    match /firms/{firmId} {
+      allow read: if isOwner();
+      allow create: if isOwnerWrite() && isValidFirm(request.resource.data);
+      allow update: if isOwner() && isOwnerWrite() && isValidFirm(request.resource.data);
+      allow delete: if isOwner();
+    }
+
+    match /memberships/{membershipId} {
+      allow read: if isOwner();
+      allow create: if isOwnerWrite() && isValidMembership(request.resource.data);
+      allow update: if isOwner() && isOwnerWrite() && isValidMembership(request.resource.data);
+      allow delete: if isOwner();
+    }
+
+    match /trustAccounts/{accountId} {
+      allow read: if isOwner();
+      allow create: if isOwnerWrite() && isValidTrustAccount(request.resource.data);
+      allow update: if isOwner() && isOwnerWrite() && isValidTrustAccount(request.resource.data);
       allow delete: if isOwner();
     }
 
