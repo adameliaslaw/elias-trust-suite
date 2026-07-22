@@ -19,6 +19,11 @@
 - **Branch per phase:** `claude/phaseN-<short-slug>` off `main`.
 - **One PR per phase** (or per critical if large); reference the issue (`Fixes #NN`). Ready for
   review, not draft. Keep CI green — Phase 1 makes CI trustworthy first for exactly this reason.
+- **Auto-merge convention** ([CONTRIBUTING.md](../CONTRIBUTING.md)): right after opening the PR,
+  enable **squash auto-merge** (`enable_pr_auto_merge`, `mergeMethod: SQUASH`) so it lands on `main`
+  when the `test` check passes — no waiting on the owner. Exception: if the change's correctness
+  isn't covered by CI (migrations, security, money-at-rest, trust-fund logic), leave auto-merge off
+  and request human review instead. Never weaken a test to go green.
 - **Tests are the contract:** add a reproducing test *before* fixing each critical; never delete a
   test to make CI pass.
 - **Money & audit:** all money through `@elias/money`; all compliance events through `@elias/audit`.
