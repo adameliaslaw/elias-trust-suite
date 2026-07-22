@@ -41,55 +41,67 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 2 (epic #21) — rebuilt IOLTA's accounting model. All #21 checklist
-items done; one PR opened off `main` (branch `claude/phase2-iolta-model-xygajy`). Criticals #11 and #15
-closed by the PR.
+**Session that just ran:** Phase 3 (epic #22) — reconciliation lifecycle + 7-year retention. All #22
+checklist items done; one PR opened off `main` (branch `claude/phase3-recon-lifecycle-kq9e8j`). Critical
+#14 closed by the PR.
 
 **Decision context:** #19 **Decision 3 (system of record) is still unratified** (no sign-off comment,
-box unchecked). Per plan, Phase 2 built the **decision-safe** structure: single-firm/multi-account now,
-modeled so multi-tenant SaaS stays open (Decision 1's recommended default). No invoice/payment
-"system of record" was assumed. Ratifying 3 later needs no schema change.
+box unchecked). Phase 3 is decision-safe regardless: finalize/lock/retention is trust accounting, which
+Decision 3 keeps with the suite under every option. No invoice/payment "system of record" object was built.
 
 **What landed (with commit SHAs):**
-- `c2c1c18` — the whole Phase 2 rebuild:
-  - **#11 independent streams** — `src/model.ts` defines four distinct stream types (BankTransaction /
-    BookTransaction / StatementPeriod / MatchRecord). `src/reconciliation.ts` gains `reconcileStreams()`:
-    the three legs come from different streams; outstanding-vs-cleared is decided by the MATCH stream, and
-    a **bank line never booked surfaces as a discrepancy** (`unrecordedBankItems`) — impossible before.
-    Legacy `computeReconciliations()` kept as a thin adapter so Phase 1's tests stay green.
-  - **#15 tenancy** — firms→memberships→trust-accounts; period doc IDs are account/uid-scoped
-    (`{accountId}__{month}` via `periodDocId`), no hardcoded `iolta-trust`. `firestore.rules` scoped +
-    firms/memberships/trustAccounts validators. **Rules still UNDEPLOYED** (Phase 8 / #27).
-  - **Idempotent imports** — `src/imports.ts`: deterministic CSV/sheet parse *before* the AI fallback;
-    fingerprint dedup (re-import = no-op); case-insensitive client dedup; type/sign-contradiction rejection.
-  - **Ledger fixes** — `src/ledger.ts`: filtered running balance carries the opening balance forward
-    (no restart-at-zero); chronological overdraw validation with provenance.
-  - `App.tsx` wired to all of the above; `packages/audit` `TrustImportConfirmedPayload` gained optional
-    `duplicatesSkipped`/`rejected` counts.
-- New tests: `test/model.test.ts`, `test/imports.test.ts`, `test/ledger.test.ts`, plus #11 cases appended
-  to `test/reconciliation.test.ts`. All wired into the iolta `test` script.
+- `a6a0dd7` — the whole Phase 3 lifecycle:
+  - **#14 lifecycle** — new pure module `src/lifecycle.ts`: the state machine (`draft → resolve
+    exceptions → attorney attest → finalize → immutable lock`; `reopenForAmendment` = reason + new
+    version). `buildFinalizedPacket` freezes the bank/book/statement/match inputs + computed legs into a
+    `FinalizedPacket` whose `contentHash = sha256(canonical(body))` (`@elias/audit/core`). It cites
+    `RECON_AUTHORITY` (NJ Court Rule 1:21-6) and computes `retentionUntil` = finalizedAt + 7 years
+    (TZ-independent). `canonicalizeInputs` sorts streams so the packet is byte-for-byte reproducible.
+    `assertPeriodMutable` / `LockedPeriodError` reject any tx mutation dated within a locked month.
+    `renderPacketDocument` is a deterministic CSV/text artifact.
+  - **Seal only on finalize** — removed the 1.5s debounced auto-emit in `App.tsx`; the draft-persist
+    effect now writes drafts only and **skips finalized months**. `reconciliation.completed` is sealed
+    exclusively by `handleFinalizeMonth` (attorney attest + finalize).
+  - **Payload fix (M2)** — `reconciliationCompletedPayload` sets `bankBalanceCents` = ADJUSTED bank
+    balance, so `book − bank === difference` holds.
+  - **Source retention** — `server.ts` content-hashes each upload and keeps a copy under
+    `uploads/retained/{sha256}{ext}` (idempotent, content-addressed) instead of always unlinking;
+    returns `sha256`+`bytes`. New `GET /api/source/:hash` serves the retained bytes (hex-validated).
+    `App.tsx` records `sourceStatements` docs (name+hash+covered months) on import; finalize cites them.
+  - **App wiring** — lock guards in edit/add/delete/clear/import handlers; `sourceStatements` &
+    `reconciliationPackets` subscriptions; `lockedMonths` memo; Attest/Finalize + Reopen modal + UI.
+  - **@elias/audit** — added `reconciliation.reopened` event (payload in `events.ts`, exports in
+    `core.ts`/`index.ts`, listed in `AUDIT_EVENT_TYPES`).
+  - **firestore.rules** — immutable `reconciliationPackets` (create-only), `sourceStatements`, and
+    `periodFinalized()` lock enforcement on `transactions`/`statementBalances`. **Still UNDEPLOYED**
+    (Phase 8 / #27) — client-side `lifecycle.ts` is the live enforcement today.
+  - `src/types.ts` `Reconciliation` gained lifecycle fields; `src/reconciliation.ts` extracted
+    `legacyStreams()` (exported) so the finalize path freezes the exact streams with no drift.
+- New tests: `test/lifecycle.test.ts` (7 cases) wired into the iolta `test` script.
 
-**State of the repo:** all suites green (`npm test` exit 0 across every workspace); typecheck clean.
-Backlog: #11/#15 closed by this PR; #12/#13/#20 closed in Phase 1. #19 unratified (decision memo).
+**State of the repo:** all suites green (`npm test` exit 0 across every workspace); typecheck clean; vite
+build clean. Backlog: #14 closed by this PR; #11/#15 (Phase 2), #12/#13/#20 (Phase 1) closed. #19
+unratified (decision memo).
 
-**Next session → Phase 3 (epic #22): reconciliation lifecycle + 7-year retention** (draft→attest→
-finalize→lock; immutable retained packet). Now unblocked by Phase 2. Start points:
-1. **#14** — no reconciliation close/attest/lock; history is mutable. Build the lifecycle state machine
-   on top of the new streams: a finalized month freezes its bank/book/statement/match inputs + the
-   computed legs into a retained, hash-chained packet (use `@elias/audit`).
-2. 7-year retention of the finalized packet; a locked month rejects further edits to its inputs.
-3. Consider persisting the four streams as real Firestore collections (today `reconciliation.ts` has a
-   legacy adapter deriving bank/match from each book row's `clearDate`; the independent-stream core is
-   ready for genuine bank-statement-line ingestion whenever the UI grows a bank-import surface).
+**Next session → Phase 4 (epic #23): redesign Matterproof billing.** Unblocked (only depended on Phase 1,
+which is done). Context: `docs/EVALUATION.md` (#17 Matterproof invents ~0.1h/prompt attorney time; #18
+review gate bypassable — Phase 1 *contained* both: client-facing exports gated behind
+`BILLABLE_ALLOW_CLIENT_EXPORTS=1`, docs de-claimed). Phase 4 is the real redesign: don't fabricate time,
+make the review gate structural, and honor `capturePrompts:false` (M6). All money through `@elias/money`,
+all compliance events through `@elias/audit`.
 
 **Gotchas (carried forward + new):**
 - `npm ci` then `npm run build --workspace @elias/money --workspace @elias/audit` before app tests
-  (apps depend on built `dist/`).
+  (apps depend on built `dist/`). **After editing `packages/audit` types (e.g. a new event), rebuild it**
+  or iolta typecheck fails against stale `dist/`.
 - **Do NOT `git checkout apps/billable/bin/billable.js` to drop a `chmod +x` mode diff** — it also reverts
   content. Use `chmod 644` / `git update-index --chmod=-x`. HEAD mode is `100644`. (Hit again this session;
   `chmod 644` cleared it.)
 - Lockfile must keep `grep -c msh.team package-lock.json` = 0.
-- iolta reconciliation logic lives in `src/reconciliation.ts` (`reconcileStreams` core + legacy adapter);
-  domain types in `src/model.ts`; imports in `src/imports.ts`; ledger math in `src/ledger.ts`. Extend
-  those pure modules, not the `App.tsx` `useMemo`/effects.
-- iolta Firestore rules (`firestore.rules`) are written but **undeployed** — deployment is Phase 8 / #27.
+- iolta lifecycle logic lives in `src/lifecycle.ts` (pure, browser-safe — imports only `@elias/audit/core`
+  + the money bridge); reconciliation in `src/reconciliation.ts` (`reconcileStreams` core + `legacyStreams`
+  adapter). Extend those pure modules, not the `App.tsx` effects.
+- iolta Firestore rules (`firestore.rules`) — including the new lifecycle/lock rules — are written but
+  **undeployed**; deployment is Phase 8 / #27.
+- Retained sources live on local disk (`uploads/retained/`), local-first per #19 Decision 2 — do not add a
+  cloud store.

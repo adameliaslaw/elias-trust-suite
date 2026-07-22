@@ -4,9 +4,11 @@
 > [HOMEWORK.md](HOMEWORK.md) for exactly where to start, then the epic issue for the phase.
 > Canonical plan: [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) · Findings narrative:
 > [EVALUATION.md](EVALUATION.md) · Backlog: GitHub Issues **#11–#27**.
-> Last updated: 2026-07-22 — Phase 2 (#21) complete (PR open): IOLTA rebuilt on independent bank/book/
-> statement/match streams (#11), a firms→accounts multi-tenant hierarchy with account-scoped doc IDs (#15),
-> and atomic + idempotent imports — all with reproducing tests. Phase 1 (#20) landed before it.
+> Last updated: 2026-07-22 — Phase 3 (#22) complete (PR open): reconciliation lifecycle (#14) —
+> draft→attest→finalize→immutable lock; a finalized month freezes its inputs + legs into a hash-chained,
+> byte-for-byte reproducible packet retained seven years (Rule 1:21-6); reconciliation.completed is sealed
+> only on a deliberate attested finalize (no more debounced auto-emit) and its payload is now self-consistent;
+> source statements retained. All with reproducing tests. Phase 2 (#21) and Phase 1 (#20) landed before it.
 
 ## Product
 
@@ -36,6 +38,16 @@ The previous STATUS asserted "480 checks green" and a sound audit/reconciliation
   statement / match); a bank line never booked surfaces as a discrepancy. Reproducing test added.
 - ✅ **FIXED (#13)** — a month with no statement balance is now `incomplete`, never "Reconciled";
   only a genuinely reconciled month seals `reconciliation.completed`. Reproducing test added.
+- ✅ **FIXED (#14, Phase 3)** — reconciliation now has a real lifecycle: draft → resolve exceptions →
+  attorney attest → finalize → immutable lock. A finalized month freezes bank/book/statement/match inputs +
+  computed legs into a hash-chained packet (`src/lifecycle.ts`), retained 7 years (Rule 1:21-6), reproducible
+  byte-for-byte; a locked month rejects edits/adds/deletes to any transaction dated within it. Amend/reopen
+  requires a reason + new version. Reproducing tests in `test/lifecycle.test.ts`.
+- ✅ **FIXED (M2, Phase 3)** — `reconciliation.completed` is sealed ONLY on the deliberate attested finalize
+  (debounced auto-emit removed), and its `bankBalanceCents` now carries the adjusted bank balance so
+  `book − bank === difference` (was self-contradictory). Reproducing test added.
+- ✅ **FIXED (Phase 3)** — uploaded source statements are retained (content-hashed copy under
+  `uploads/retained/`), not always deleted, so a finalized packet reproduces from the exact source.
 - ❌ **Audit verify ignores the head it maintains**; lost localStorage queue drops entries silently.
   (#16, verified — Phase 5)
 - ✅ **FIXED (#15)** — firms→memberships→trust-accounts hierarchy; period doc IDs are account/uid-scoped
@@ -55,8 +67,8 @@ The tests are valuable but largely do not cover these paths.
 | 0 — Define the product | #19 | ⬜ Not started (owner decisions; rewritten as a decision memo) |
 | 1 — Contain risk + regression tests | #20 | ✅ Done — CI deterministic |
 | 2 — Rebuild IOLTA accounting model | #21 | ✅ Done — PR open (#11, #15 closed) |
-| 3 — Reconciliation lifecycle + retention | #22 | ⬜ Next ← **START HERE (code)** (unblocked by 2) |
-| 4 — Redesign Matterproof billing | #23 | ⬜ Blocked on 1 |
+| 3 — Reconciliation lifecycle + retention | #22 | ✅ Done — PR open (#14 closed) |
+| 4 — Redesign Matterproof billing | #23 | ⬜ Next ← **START HERE (code)** (blocked on 1 only; 1 done) |
 | 5 — Data + audit hardening | #24 | ⬜ Blocked on 2–4 |
 | 6 — Books role + `packages/rules` | #25 | ⬜ Blocked on 0 |
 | 7 — Suite integration + `packages/auth` | #26 | ⬜ Blocked on 2–6 |
