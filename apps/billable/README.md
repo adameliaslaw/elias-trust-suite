@@ -1,18 +1,29 @@
 # Matterproof
 
-**Proof of work for every matter.** An evidence-grade ledger of AI work,
-kept like a timesheet.
+**A contemporaneous record of AI work on client matters.** An evidence-grade
+ledger, kept like a timesheet.
+
+> **Status: experimental alpha — not for client billing yet.** The durations
+> Matterproof records are a *machine estimate of elapsed activity*, not
+> confirmed attorney minutes, and the review gate is not yet enforced (issues
+> #17, #18). Until that lands (Phase 4 / #23), **client-facing exports are
+> disabled by default** — LEDES/HTML invoices, LawPay links, and Clio pushes
+> all refuse to run unless an operator explicitly sets
+> `BILLABLE_ALLOW_CLIENT_EXPORTS=1`. Use it as a supervision/audit record, not
+> as a source of bills.
 
 AI now does real work on client matters — drafting, research, analysis — and
 that creates a bookkeeping problem the billing stack can't see: *what did the
 AI do, on whose matter, for how long, and who reviewed it?* Matterproof
-records every step Claude takes, contemporaneously, and turns the record into
-attorney-grade time entries you review before anything reaches a bill:
+records every step Claude takes, contemporaneously, so an attorney can review
+it and decide what — if anything — becomes a time entry:
 
-- **Actual time, honestly kept** — entries reflect recorded activity rounded
-  to 6-minute (0.1 hr) increments, with idle gaps capped so
-  away-from-keyboard time is never counted. Aligned with **ABA Formal
-  Op. 512**: bill actual time, never time "saved." See [ETHICS.md](ETHICS.md).
+- **Recorded activity, pending human confirmation** — entries reflect measured
+  elapsed activity rounded to 6-minute (0.1 hr) increments, with idle gaps
+  capped so away-from-keyboard time is never counted. This is an *estimate a
+  human must confirm*, not attorney time by itself. **ABA Formal Op. 512**
+  requires billing actual time, never time "saved"; nothing here reaches a
+  client bill until confirmed and reviewed. See [ETHICS.md](ETHICS.md).
 - **Attorney review workflow** — a local web dashboard where you approve,
   adjust, or write off every entry before billing. Review decisions are
   stored apart from the raw ledger, preserving the underlying record as your
@@ -22,8 +33,11 @@ attorney-grade time entries you review before anything reaches a bill:
 - **Client/matter routing** by project directory.
 - **AI cost pass-through** — disclosed as a separate expense computed from
   unrounded runtime, never blended into fees.
-- **Exports that fit the billing stack** — terminal timesheet, CSV,
-  **LEDES 1998B**, and a printable HTML statement.
+- **Exports** — terminal timesheet and CSV are always available. The
+  client-facing formats (**LEDES 1998B**, printable HTML statement, LawPay
+  links, Clio push) are **disabled by default** pending review enforcement
+  (#18); opt in with `BILLABLE_ALLOW_CLIENT_EXPORTS=1` once you understand the
+  caveat above.
 - **Local-only by design** — no cloud, no telemetry; the dashboard binds to
   127.0.0.1. See [PRIVACY.md](PRIVACY.md).
 

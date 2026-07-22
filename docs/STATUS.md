@@ -4,7 +4,8 @@
 > [HOMEWORK.md](HOMEWORK.md) for exactly where to start, then the epic issue for the phase.
 > Canonical plan: [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) · Findings narrative:
 > [EVALUATION.md](EVALUATION.md) · Backlog: GitHub Issues **#11–#27**.
-> Last updated: 2026-07-22 — assessment reconciled with a second independent evaluation; backlog filed.
+> Last updated: 2026-07-22 — Phase 1 (#20) complete: CI made deterministic; PDF import, false-"Reconciled",
+> scientific-notation crash, dead UI, and unsafe Matterproof exports all fixed with reproducing tests (PR open).
 
 ## Product
 
@@ -24,20 +25,23 @@ integrated product.
 ## Reality check on prior claims
 
 The previous STATUS asserted "480 checks green" and a sound audit/reconciliation story. Verified
-2026-07-22:
-- ✅ `npm ci` clean (0 vulns); typecheck clean; suites pass **when green**.
-- ⚠️ **CI is not deterministically green** — billable `test/audit.test.js:127` is flaky (asserts
-  `"300"` absent; collides with SHA-256 hex) → random red ~1/8 runs. (#20)
-- ❌ **IOLTA PDF import throws** on every upload (`pdf-parse` export shape). (#12, verified)
+2026-07-22; Phase 1 (#20) has since fixed the items marked **FIXED** below:
+- ✅ `npm ci` clean (0 vulns); typecheck clean; suites pass.
+- ✅ **FIXED (#20)** — billable `test/audit.test.js:127` flake removed (structural leaf-value check,
+  not a `"300"` substring). Verified green 10/10 runs → **CI is now deterministic.**
+- ✅ **FIXED (#12)** — IOLTA PDF import uses the `pdf-parse` v2 `PDFParse` class; covered by a
+  real-PDF fixture test.
 - ❌ **IOLTA reconciliation is partly circular** — legs share one source; "correct math" ≠ correct
-  model. (#11)
-- ❌ **A month with no statement balance can display "Reconciled."** (#13, verified)
+  model. (#11 — Phase 2)
+- ✅ **FIXED (#13)** — a month with no statement balance is now `incomplete`, never "Reconciled";
+  only a genuinely reconciled month seals `reconciliation.completed`. Reproducing test added.
 - ❌ **Audit verify ignores the head it maintains**; lost localStorage queue drops entries silently.
-  (#16, verified)
-- ❌ **Multi-user/month collisions**; trust account hardcoded `iolta-trust`. (#15, verified)
-- ❌ **Books stores Plaid/ACH/employee-bank secrets in plaintext**, backups included. (#24)
-- ❌ **Matterproof invents attorney time** (~0.1h/prompt) and its **review gate is bypassable**.
-  (#17, #18)
+  (#16, verified — Phase 5)
+- ❌ **Multi-user/month collisions**; trust account hardcoded `iolta-trust`. (#15, verified — Phase 2)
+- ❌ **Books stores Plaid/ACH/employee-bank secrets in plaintext**, backups included. (#24 — Phase 5)
+- ⚠️ **Matterproof invents attorney time** (~0.1h/prompt) and its **review gate is bypassable**
+  (#17, #18 — Phase 4). **Contained (#20):** client-facing exports (LEDES/HTML/LawPay/Clio) are now
+  disabled by default; docs no longer claim actual-time billing.
 
 The tests are valuable but largely do not cover these paths.
 
@@ -45,9 +49,9 @@ The tests are valuable but largely do not cover these paths.
 
 | Phase | Epic | Status |
 |---|---|---|
-| 0 — Define the product | #19 | ⬜ Not started (owner decisions) |
-| 1 — Contain risk + regression tests | #20 | ⬜ Not started ← **START HERE (code)** |
-| 2 — Rebuild IOLTA accounting model | #21 | ⬜ Blocked on 0/1 |
+| 0 — Define the product | #19 | ⬜ Not started (owner decisions; rewritten as a decision memo) |
+| 1 — Contain risk + regression tests | #20 | ✅ Done — PR open, CI deterministic |
+| 2 — Rebuild IOLTA accounting model | #21 | ⬜ Next ← **START HERE (code)** |
 | 3 — Reconciliation lifecycle + retention | #22 | ⬜ Blocked on 2 |
 | 4 — Redesign Matterproof billing | #23 | ⬜ Blocked on 1 |
 | 5 — Data + audit hardening | #24 | ⬜ Blocked on 2–4 |
@@ -80,5 +84,8 @@ The tests are valuable but largely do not cover these paths.
 - `npm ci` works cleanly here (no puppeteer/Chromium trap). Lockfile is clean
   (`grep -c msh.team package-lock.json` = 0).
 - iolta pulls `xlsx` from a CDN tarball (fragile — Phase 8 / #27).
-- iolta `start: node server.ts` does not run under the stated Node 20 min; only `dev` (tsx) works.
+- iolta `start` now runs `NODE_ENV=production tsx server.ts` (with a `prestart` build) — `node
+  server.ts` couldn't run TypeScript under Node 20. Full deploy config (PORT/env loading) is Phase 8.
+- Matterproof client-facing exports are gated behind `BILLABLE_ALLOW_CLIENT_EXPORTS=1` (#18 stopgap);
+  the billable test suite sets it so capability tests still run.
 - Test runs may `chmod +x` `apps/billable/bin/billable.js` (mode-only diff) — discard it.

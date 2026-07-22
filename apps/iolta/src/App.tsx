@@ -705,7 +705,7 @@ export default function App() {
           </div>
           <div>
             <h1 className="text-lg font-bold text-gray-900 leading-tight">IOLTA Reconciliation</h1>
-            <p className="text-xs text-gray-500">NJ Rule 1:21-6 Compliance</p>
+            <p className="text-xs text-gray-500">NJ Rule 1:21-6 reconciliation aid — not a compliance guarantee</p>
           </div>
         </div>
 

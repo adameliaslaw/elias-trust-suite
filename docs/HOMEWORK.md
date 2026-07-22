@@ -36,33 +36,46 @@
 
 ## Current handoff
 
-**Session that just ran:** Assessment + reconciliation (two independent evaluations merged) →
-canonical docs + filed backlog. No application code changed.
+**Session that just ran:** Phase 1 (epic #20) — contained risk + added reproducing tests. All #20
+checklist items done; one PR opened off `main` (branch `claude/phase1-contain-risk-ov083u`).
 
-**State of the repo:** clean working tree; `apps/*` + `packages/money|audit` as migrated; CI green
-*when the flaky test doesn't fire*. Backlog #11–#27 filed. Docs (`STATUS`, `CONSOLIDATION_PLAN`,
-`EVALUATION`, this file) are canonical.
+**What landed (with commit SHAs):**
+- `daed6fa` — **flaky billable test fixed** (`test/audit.test.js`): structural leaf-value check instead
+  of the `"300"` substring that collided with SHA-256 hex. **CI is now deterministic** (verified 10/10).
+- `1a5f2ce` — **IOLTA PDF import (#12)**: `apps/iolta/src/pdf.ts` uses the `pdf-parse@2.4.5` `PDFParse`
+  class; real-PDF fixture test (`test/pdf.test.ts`). Also fixes the iolta `start` script (tsx).
+- `f879c5b` — **statement-balance / false-"Reconciled" (#13)**: logic extracted to
+  `apps/iolta/src/reconciliation.ts` with a status of `incomplete|reconciled|discrepancy`; only a real
+  reconciliation seals `reconciliation.completed`. Also: Manual Entry modal wired, duplicate `<Chatbot/>`
+  removed. Reproducing test `test/reconciliation.test.ts`.
+- `0dd7cd1` — **`toCents` scientific-notation crash**: `dec()` expands exponential form; magnitude guard
+  moved to cents conversion (`iolta/src/money.ts`).
+- `6e51d15` — **Matterproof client-facing exports disabled (#18 stopgap)**: `apps/billable/src/exports-gate.js`
+  gates LEDES/HTML/LawPay/Clio on both CLI and HTTP; off unless `BILLABLE_ALLOW_CLIENT_EXPORTS=1`.
+  Docs-honesty edits (billable README, iolta header) in the docs commit.
 
-**Next session → Phase 1 (epic #20).** Phase 0 (#19) is owner-only product decisions and does not
-block Phase 1 code. Start here, in this order:
+**State of the repo:** all suites green (`npm test` exit 0); typecheck clean. Backlog #11–#27 still open
+except #12/#13 (closed by the PR) and #20 (epic, closed by the PR). #19 rewritten as a decision memo.
 
-1. **Fix the flaky test first** so CI is trustworthy for everything after
-   (`apps/billable/test/audit.test.js:127` — replace the `"300"` substring assertion with a
-   structural payload check that the config *value* isn't present; keep the "secret never logged"
-   intent). Verify: run `npm test` in `apps/billable` ~10× — must pass every time.
-2. **Fix IOLTA PDF import** (#12): `apps/iolta/server.ts:9,230` — use the `pdf-parse@2.4.5` class API
-   (`const { PDFParse } = require('pdf-parse')`), remove the `as any`, add a PDF-fixture test.
-3. **Require an explicit statement balance** (#13): `apps/iolta/src/App.tsx:457,500-510,559` — a month
-   with no balance entered is *incomplete*, never zero/"Reconciled"; only seal `reconciliation.completed`
-   when actually reconciled.
-4. Then the rest of #20's checklist: `toCents` scientific-notation crash (`iolta/src/money.ts:31`),
-   Manual Entry dead button, duplicate `<Chatbot/>`, iolta `start` script, docs-honesty edits,
-   disable client-facing Matterproof exports until review is enforced (#18 stopgap).
+**Next session → Phase 2 (epic #21): rebuild IOLTA's accounting model.** Depends on Phase 0 (#19) product
+decisions AND the now-complete Phase 1. **Check #19 first** — Phase 2 needs the "system of record" and
+"single-firm vs multi-tenant" calls (the memo recommends single-firm/multi-account now, which keeps SaaS
+open). If the owner hasn't signed off, build the general firms→accounts hierarchy anyway (decision-safe).
+Start with:
+1. **#11** — separate bank / book / statement / match streams so the three legs are independently sourced
+   (ends the circular reconciliation). The Phase 1 `reconciliation.ts` still derives all legs from one
+   `transactions` array — Phase 2 replaces that.
+2. **#15** — firms → memberships → trust accounts → account-scoped monthly periods; remove hardcoded
+   `iolta-trust`; uid/account-scoped doc IDs + Firestore rules.
+3. Atomic + idempotent imports (deterministic CSV/XLS parse before AI fallback; dedupe); reject
+   type/sign contradictions; fix filtered running balances restarting at zero.
 
-**Acceptance for Phase 1:** CI deterministically green; PDF import works under test; no path claims
-unearned compliance; Matterproof cannot emit client-facing bills. Then update STATUS (Phase 1 → ✅,
-Phase 2 → next) and rewrite this handoff for Phase 2 (#21).
-
-**Gotchas:** `npm ci` then `npm run build --workspace @elias/money --workspace @elias/audit` before
-app tests (apps depend on built `dist/`). Discard any `chmod +x` mode-only diff on
-`apps/billable/bin/billable.js`. Lockfile must keep `grep -c msh.team` = 0.
+**Gotchas:**
+- `npm ci` then `npm run build --workspace @elias/money --workspace @elias/audit` before app tests
+  (apps depend on built `dist/`).
+- **Do NOT `git checkout apps/billable/bin/billable.js` to drop a `chmod +x` mode diff** — it also reverts
+  content edits (bit me this session). Use `git update-index --chmod=-x` / `chmod 644` instead, or just
+  leave the mode diff and don't stage it. HEAD mode is `100644`.
+- Lockfile must keep `grep -c msh.team package-lock.json` = 0.
+- iolta reconciliation logic now lives in `src/reconciliation.ts` (pure, unit-tested) — extend it there,
+  not back inside the `App.tsx` `useMemo`.
