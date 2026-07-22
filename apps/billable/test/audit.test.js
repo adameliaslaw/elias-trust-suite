@@ -123,8 +123,21 @@ module.exports = (test) => {
     const cc = entries.find(e => e.type === 'config.changed');
     assert.ok(cc, 'config.changed present');
     assert.ok(cc.payload.keys.includes('rate') && cc.payload.keys.includes('sendgridApiKey'));
-    assert.ok(!JSON.stringify(entries).includes('SG.topsecret'), 'secret value never logged');
-    assert.ok(!JSON.stringify(entries).includes('300'), 'rate value not logged');
+    // The whole point: the chain records WHICH keys changed, never their values.
+    // Assert structurally by scanning every leaf value in the semantic payloads
+    // for the config values themselves. We check leaf *equality*, not a substring
+    // of the serialized entries: chain hashes are 64-char hex and would randomly
+    // contain a short numeric like "300" (~1-in-8 runs), making a substring test
+    // flaky. Key names ('rate') legitimately appear in payload.keys and are fine.
+    const leafValues = (v, out = []) => {
+      if (Array.isArray(v)) v.forEach(x => leafValues(x, out));
+      else if (v && typeof v === 'object') Object.values(v).forEach(x => leafValues(x, out));
+      else out.push(v);
+      return out;
+    };
+    const payloadLeaves = entries.flatMap(e => leafValues(e.payload));
+    assert.ok(!payloadLeaves.includes('SG.topsecret'), 'secret value never logged');
+    assert.ok(!payloadLeaves.includes(300) && !payloadLeaves.includes('300'), 'rate value not logged');
   });
 
   test('audit: lawpay request/payment chain with exact cents strings', () => {
