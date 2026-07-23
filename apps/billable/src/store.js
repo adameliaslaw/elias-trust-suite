@@ -86,11 +86,25 @@ function writeConfig(config) {
   }
 }
 
+// Enforce capturePrompts:false on EVERY write path (M6). PRIVACY.md promises
+// that with capture off, prompt text never lands in the ledger — but the
+// promise has to live at the single choke point every writer passes through
+// (CLI `log`, the dashboard's POST /api/log, the browser extension), not in
+// any one caller. Only prompt `detail` is stripped; a manual entry's
+// description is attorney-authored text, not captured prompt text, and stays.
+function scrubForPrivacy(event, config) {
+  if (event && event.type === 'prompt' && config.capturePrompts === false && event.detail) {
+    return { ...event, detail: '' };
+  }
+  return event;
+}
+
 function appendEvent(event) {
   ensureHome();
+  const safe = scrubForPrivacy(event, readConfig());
   // Stamped with chain fields (seq/prevHash/hash) under a lockfile so
   // concurrent hook processes serialize instead of forking the chain.
-  const { firstChainedWithLegacy } = audit.appendStampedEvent(ledgerPath(), event);
+  const { firstChainedWithLegacy } = audit.appendStampedEvent(ledgerPath(), safe);
   tightenPerms(ledgerPath());
   if (firstChainedWithLegacy) {
     // Bind the pre-chain events before anything else touches the semantic log.
@@ -106,13 +120,27 @@ function readEvents() {
     return [];
   }
   const events = [];
-  for (const line of raw.split('\n')) {
+  const badLines = [];
+  const lines = raw.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (!line.trim()) continue;
     try {
       events.push(JSON.parse(line));
     } catch {
-      // Skip corrupt lines rather than losing the whole ledger.
+      // Fail LOUD: a corrupt ledger record is evidence of a partial write or
+      // tampering, and silently dropping it hides missing billable time and
+      // breaks the append-only guarantee. Surface it (with the line number) so
+      // it is quarantined by a human, never billed around.
+      badLines.push(i + 1);
     }
+  }
+  if (badLines.length) {
+    throw new Error(
+      `ledger.jsonl: ${badLines.length} malformed record(s) at line ${badLines.join(', ')} — ` +
+      `refusing to silently skip them. Repair or quarantine ${ledgerPath()} (a backup copy is ` +
+      `safe; the audit chain will flag any alteration) before continuing.`
+    );
   }
   events.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
   return events;
@@ -155,6 +183,16 @@ function writeOverride(id, patch) {
   return all[id];
 }
 
+// Stamp the single, mutually-exclusive billed marker onto an entry (#18).
+// Once set, every client-facing destination treats the entry as billed, so a
+// second export is a no-op. The write is chained as an override_written audit
+// event (the `billed` field shows in its `fields` list).
+function markBilled(id, destination, reference) {
+  return writeOverride(id, {
+    billed: { destination: String(destination), reference: String(reference), at: new Date().toISOString() },
+  });
+}
+
 function matterFor(config, cwd) {
   if (cwd) {
     // Longest-prefix match so nested projects resolve to the most specific matter.
@@ -187,5 +225,6 @@ module.exports = {
   readEvents,
   readOverrides,
   writeOverride,
+  markBilled,
   matterFor,
 };

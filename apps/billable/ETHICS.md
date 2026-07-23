@@ -12,22 +12,29 @@ disclosure and client agreement.
 Matterproof is built to make honest billing *easier to prove*, not to inflate
 it:
 
-## Actual time, contemporaneously recorded
+## AI runtime is provenance; billable minutes are the attorney's
 
 Every entry is derived from timestamped activity captured as it happens —
-prompts, AI steps, completions. Idle gaps are capped so away-from-keyboard
-time is never counted. Reconstructed time is an ethics risk; a
-contemporaneous ledger is the cure.
+prompts, AI steps, completions, with idle gaps capped. That measured runtime is
+the **provenance and cost basis** of the work, not billable attorney time.
+Matterproof deliberately does **not** infer a fee from a machine duration:
+inferred attorney time defaults to zero, and a billable minute exists only once
+an attorney enters or confirms the human minutes actually worked. The elapsed
+figure is offered as a *suggestion* to start from, never a bill. Reconstructed
+time is an ethics risk; a contemporaneous provenance record plus an explicit
+human confirmation is the cure.
 
 ## Attorney review is a first-class workflow
 
-AI activity becomes a *draft* time entry. The dashboard's review workflow
-(`billable serve`) exists so a lawyer examines every entry — adjusting hours,
-rewriting narratives, or marking work "no charge" — before anything reaches a
-client. Review decisions are stored separately from the raw ledger, so the
-original record of what the AI actually did is never altered. That separation
-is your supervision record under Rules 5.1/5.3 and your audit trail if a
-court, client, or carrier asks how AI was used on a matter.
+AI activity is a *record to review*, not a draft bill. The dashboard
+(`billable serve`) exists so a lawyer examines every entry, confirms the
+billable minutes, rewrites narratives, or marks work "no charge" — before
+anything reaches a client. Only reviewed, attorney-confirmed, not-yet-billed
+entries can be exported, and each bills to a single destination exactly once.
+Review decisions are stored separately from the raw ledger, so the original
+record of what the AI actually did is never altered. That separation is your
+supervision record under Rules 5.1/5.3 and your audit trail if a court, client,
+or carrier asks how AI was used on a matter.
 
 ## Costs are disclosed, not buried
 

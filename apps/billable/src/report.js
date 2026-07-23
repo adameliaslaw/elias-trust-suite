@@ -3,6 +3,7 @@
 
 const { totals } = require('./entries');
 const { truncate } = require('./billing');
+const { isClientBillable } = require('./client-billing');
 
 function money(amount, currency) {
   const sym = currency === 'USD' ? '$' : currency + ' ';
@@ -83,7 +84,11 @@ function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
-function htmlInvoice(entries, config, { title, from, to, payUrl } = {}) {
+function htmlInvoice(allEntries, config, { title, from, to, payUrl } = {}) {
+  // An HTML statement is a CLIENT-facing document: only reviewed, attorney-
+  // confirmed, unbilled work may appear on it (#17/#18). Non-billable captured
+  // time never reaches the client, even by mistake.
+  const entries = allEntries.filter(isClientBillable);
   const t = totals(entries);
   const showAmount = (config.rate || 0) > 0;
   const period = from || to ? `${from || 'start'} — ${to || 'present'}` : 'All time';
