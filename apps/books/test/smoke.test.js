@@ -685,6 +685,24 @@ async function main() {
   r = await req('POST', '/api/recurring', { customerId: 'nope', items: [], nextDate: '2026-08-01' });
   check('template validation runs', r.status === 400);
 
+  // M7: concurrent writes serialize per company — no lost saves, no forked
+  // audit chain. Fire a burst of invoice creates at once; every one must
+  // persist with a distinct number and the tamper-evident chain must still
+  // verify (an interleaved save or a forked append would break one of these).
+  const beforeBurst = (await req('GET', '/api/invoices')).data.length;
+  const N = 15;
+  await Promise.all(Array.from({ length: N }, (_, i) =>
+    req('POST', '/api/invoices', {
+      customerId: cafeCust.id, date: '2026-07-20',
+      items: [{ description: `Concurrent ${i}`, qty: 1, rate: 100 + i }]
+    })));
+  const afterBurst = (await req('GET', '/api/invoices')).data;
+  check('every concurrent create persisted (no lost save)', afterBurst.length === beforeBurst + N);
+  const burstNumbers = afterBurst.filter(inv => /^INV-/.test(inv.number)).map(inv => inv.number);
+  check('concurrent creates got distinct invoice numbers', new Set(burstNumbers).size === burstNumbers.length);
+  check('the audit chain still verifies after the concurrent burst',
+    (await req('GET', '/api/audit')).data.verified.ok === true);
+
   // ---- billable time tracking ----
   r = await req('POST', '/api/time', { customerId: 'nope', date: '2026-07-01', hours: 1, rate: 350, description: 'x' });
   check('time entry requires a real customer', r.status === 400);

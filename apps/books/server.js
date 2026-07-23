@@ -2090,6 +2090,23 @@ function serveStatic(req, res, pathname) {
   });
 }
 
+// Serialize mutating requests per company (M7). The datastore is one shared
+// in-memory object per company persisted with a whole-file save(); two write
+// requests that interleave across their awaits (readBody, audit.append) can
+// clobber each other's save or race the audit append. A per-company promise
+// chain makes each non-GET request's read-modify-save-append run to completion
+// before the next starts — the money mutation and its audit append land as one
+// uninterrupted unit.
+const companyLocks = new Map();
+function withCompanyLock(companyId, fn) {
+  const prev = companyLocks.get(companyId) || Promise.resolve();
+  const next = prev.then(fn, fn); // run regardless of the prior result
+  // Keep the chain alive but never let a rejection wedge the queue. fn handles
+  // its own errors, so this is belt-and-suspenders.
+  companyLocks.set(companyId, next.then(() => {}, () => {}));
+  return next;
+}
+
 async function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = url.pathname;
@@ -2123,35 +2140,40 @@ async function handleRequest(req, res) {
         // Malformed %-encoding in a route param — reject, don't crash.
         return badRequest(res, 'Malformed URL encoding');
       }
-      try {
-        await r.handler(req, res, db, params, url.searchParams);
-      } catch (e) {
-        badRequest(res, e.message || 'Bad request');
-      }
-      // Audit trail: who-did-what for every write — including login attempts,
-      // so brute-force bursts are visible. Paths only — request bodies are
-      // never logged (they can carry passwords and bank keys).
-      if (req.method !== 'GET' && pathname !== '/api/auth-status') {
-        db.auditLog.push({
-          ts: new Date().toISOString(),
-          method: req.method,
-          path: pathname,
-          status: res.statusCode
-        });
-        if (db.auditLog.length > 500) db.auditLog.splice(0, db.auditLog.length - 500);
-        save(db);
-        // Layer A: the same write, chained and tamper-evident. This runs
-        // after the response, so a chain failure can only be loud (stderr),
-        // not roll back — semantic money events are awaited pre-response in
-        // the handlers themselves.
+      const runHandler = async () => {
         try {
-          await audit.append(req.companyId, 'http.write', {
-            method: req.method, path: pathname, status: res.statusCode, actor: audit.actor(req)
-          });
+          await r.handler(req, res, db, params, url.searchParams);
         } catch (e) {
-          console.error('audit chain append failed:', e.message);
+          badRequest(res, e.message || 'Bad request');
         }
-      }
+        // Audit trail: who-did-what for every write — including login attempts,
+        // so brute-force bursts are visible. Paths only — request bodies are
+        // never logged (they can carry passwords and bank keys).
+        if (req.method !== 'GET' && pathname !== '/api/auth-status') {
+          db.auditLog.push({
+            ts: new Date().toISOString(),
+            method: req.method,
+            path: pathname,
+            status: res.statusCode
+          });
+          if (db.auditLog.length > 500) db.auditLog.splice(0, db.auditLog.length - 500);
+          save(db);
+          // Layer A: the same write, chained and tamper-evident. A chain
+          // failure is loud (stderr), not a rollback — semantic money events
+          // are awaited pre-response in the handlers themselves.
+          try {
+            await audit.append(req.companyId, 'http.write', {
+              method: req.method, path: pathname, status: res.statusCode, actor: audit.actor(req)
+            });
+          } catch (e) {
+            console.error('audit chain append failed:', e.message);
+          }
+        }
+      };
+      // GETs are read-only (M8) and need no lock; mutations serialize per
+      // company so their read-modify-save-append cannot interleave (M7).
+      if (req.method === 'GET') await runHandler();
+      else await withCompanyLock(req.companyId, runHandler);
       return;
     }
     return notFound(res);
