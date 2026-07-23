@@ -41,94 +41,65 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 5 (epic #24) — data + audit hardening. **7 of 8** checklist items landed with
-reproducing tests; one PR opened off `main` (branch `claude/phase-5-kickoff-tintze`). Critical #16 closed.
-**Auto-merge is intentionally OFF** (money-at-rest + security: encryption, cookies, store locking are not
-fully covered by CI semantics) — request human review, per CONTRIBUTING's exception.
+**Session that just ran:** Phase 5 (epic #24) — **finished the last item** (cross-app write-atomicity /
+idempotency). New PR opened off `main` (branch `claude/phase5-outbox-atomicity-8wf9g4`); **#24 is now fully
+checked and CLOSED**; Phase 5 marked ✅ done in STATUS. **Auto-merge is intentionally OFF** (money/security-
+adjacent: crash-atomicity + external-side dedup are not fully covered by CI semantics) — human review
+requested, per CONTRIBUTING's exception.
 
 **What landed this session (each with a reproducing test):**
-- **#16 (critical) — iolta fail-closed verify.** `src/audit-chain.ts` gains `verifyChainState(docs, head,
-  pendingCount)`; `src/audit.ts#verifyAuditChain` now fetches the CAS head (`auditMeta/{uid}`) + reads the
-  offline queue and reconciles all three. Dropped tail entries, a missing/rewound head, or unflushed queued
-  events fail closed (before, a truncated chain verified "ok"). 7 new cases in `test/audit.test.ts`.
-- **H2 — billable `readLastLine`** (`src/audit.js`) scans backward in chunks to read the WHOLE last line, so a
-  >8 KB ledger line no longer resets seq to 0 and self-corrupts the chain.
-- **H1 — books `/api/audit`** returns `{ verified, entries }` from the hash-chained file via new
-  `audit.entries()`, not the forgeable `db.auditLog`. Frontend audit card renders the chain + a verified badge.
-- **#24 — books secrets at rest.** New `lib/secrets.js` (AES-256-GCM) seals known secret leaves at the store
-  boundary (`store.save`→`sealForStorage`, `store.load`→`openFromStorage`); in-memory db stays plaintext.
-  Key: `QUICKBUCKS_ENCRYPTION_KEY` or a 0600 `data/.secret.key` **excluded from backups**; company files +
-  global.json written 0600. Plaintext (pre-encryption) passes through decrypt and seals on next save.
-- **M8 + L3 — books.** `generateRecurring` removed from GET handlers → new `scheduleRecurring()` (startup +
-  daily) + the recurring write path; a tampered chain no longer 400s a read. Cookies get `; Secure` over TLS
-  (`secureAttr(req)`).
-- **M7 — books.** Per-company `withCompanyLock` serializes each non-GET request's read-modify-save-append.
-- **LawPay idempotency (partial of the outbox item).** `lawpay.markRequested` is now idempotent on its
-  deterministic reference (a retry appends no duplicate `payment_request`; A/R counts it once).
+- **Clio push retry dedup (`apps/billable/src/clio.js#pushEntries`).** A Clio `POST /activities` that
+  succeeded but died before `store.writeOverride({clioId})` would re-POST on retry and duplicate the Clio
+  activity. Now `pushEntries` records a durable, hash-chained **pre-POST intent** (`clio.push_intent` ledger
+  event via new `store.appendClioIntent`, mirroring LawPay's deterministic-reference dedup shape). On retry a
+  dangling intent triggers `reconcilePush` — a `GET /activities` query matching the intended
+  (matter, date, quantity, note) — that **adopts** the existing activity id instead of re-POSTing, POSTs only
+  when the prior attempt never landed, and **fails closed** on an ambiguous (>1) match. New exports:
+  `pushKey`, `reconcilePush`. Tests: 3 cases in `test/run.js` (`#24`).
+- **books save()+audit crash-atomicity — transactional outbox (`apps/books/lib/outbox.js`, new).** The owed
+  audit event now rides inside the atomically-saved company JSON (`db.outbox`), so it commits in the SAME
+  tmp+rename as the money mutation — no more silent-gap window between `save()` and `audit.append()`. A relay
+  (`outbox.flush`) delivers each owed event to the tamper-evident chain and clears it; boot-time
+  `outbox.recoverAll` redelivers anything a crash interrupted. Delivery is **idempotent** on the outbox
+  message id via new `audit.appendIdempotent` (carries `outboxId` in the payload; a replay after a crash
+  between append and clear is a no-op). `store.commit`/`commitMany` replaced the non-atomic
+  `save(db); await audit.append(...)` pattern in EVERY money handler (invoices, expenses, time, sales/bank
+  imports, payroll run/finalize/deposit, salestax, settings, recurring). Auth events and the best-effort
+  post-response `http.write` Layer A path (no company-JSON mutation) stay as plain `audit.append`. Tests:
+  `test/outbox.test.js` (4 cases, wired into `package.json`).
 
-**Remaining Phase 5 item (defer to a follow-up, keep #24 open):** the BROAD *non-atomic financial+audit
-writes across apps* + *Clio external-side dedup* / transactional-outbox. What's genuinely left:
-  - **Clio push retry safety (`apps/billable/src/clio.js#pushEntries`)** — if the Clio POST succeeds but the
-    process dies before `store.writeOverride({clioId})`, a retry re-POSTs and duplicates the Clio activity.
-    Needs an idempotency key sent to Clio (external-API dependent) or a pre-POST outbox intent record. LawPay
-    is already safe (deterministic reference + this session's duplicate guard).
-  - **books crash-atomicity of save()+audit.append** — M7 removes the *interleave* race, but the JSON `save()`
-    and the separate audit JSONL append are still two writes; a crash between them can leave them out of step.
-    A true transactional outbox (write intent → apply → mark done) would close this. Medium/large; design it
-    deliberately, don't rush.
-Prior session: Phase 4 (epic #23) — all items done; criticals #17/#18 closed.
+**Design notes for the reviewer:**
+- The Clio reconcile is natural-key matching (no Clio-side idempotency field exists in v4), so it fails closed
+  on ambiguity rather than guessing — a money-safe posture. It sends no speculative idempotency header.
+- The books outbox rides *inside* the company JSON deliberately: that's what makes "mutation + owed audit
+  event" a single atomic write. `secrets.applyToSecrets` is an allowlist, so `db.outbox` passes through
+  sealing untouched (plaintext operational state, no secrets).
+- `outboxId` is additive audit-payload metadata (documented in `packages/audit/src/events.ts`); verify()
+  hashes the payload verbatim, so a payload with or without it verifies identically. books is plain JS (not
+  typechecked), so no interface edits were needed.
 
-**Decision context:** #19 **Decision 3 (system of record) is still unratified** (no sign-off comment, box
-unchecked as of this session). Phase 4 is decision-safe under the recommended default C: time capture with
-attorney-confirmed provenance and a reviewed-once export is squarely the suite's own time-capture domain. No
-invoice/payment/AR "system of record" object was built — LEDES/Clio/LawPay stay integration *destinations*,
-not a general ledger.
+**State of the repo:** all suites green (`npm test` exit 0 across every workspace — books 252 + audit 11 +
+outbox 4, billable 56, iolta 18 + 13, audit 16, money 22); `npm run typecheck` clean. Backlog: **#24 CLOSED**
+by this session; #16/#17/#18 (P4/5), #14 (P3), #11/#15 (P2), #12/#13/#20 (P1) closed. #19 unratified (gates
+Phases 6–7 only).
 
-**What landed (commit SHA `dc598c2`):**
-- **#17 — inferred time = zero (`apps/billable/src/entries.js`).** `finishTask` records the machine estimate
-  as `suggestedHours` and sets billable `hours: 0`, `confirmed: false`; AI runtime stays as `seconds`
-  (cost/provenance). A manual entry is attorney-entered, so it's `confirmed: true` by construction.
-  `applyOverride` marks `entry.confirmed` when an attorney supplies hours, computes `entry.billable`
-  (`!writeOff && confirmed && hours>0`), and prices the fee only for billable entries. `totals` gained
-  `unconfirmed`/`billableCount`.
-- **#18 — reviewed-only, mutually-exclusive, idempotent billing (new `apps/billable/src/client-billing.js`).**
-  A single `billed` marker (`{destination, reference, at}`; legacy `lawpayRef`/`clioId` still count).
-  `isClientBillable`/`classifyForClient` require reviewed + confirmed + not-written-off + not-already-billed,
-  applied on EVERY client path: `ledes.js` and `report.js#htmlInvoice` filter internally; `lawpay.js`
-  `classifyForBilling` and `clio.js` `classifyForPush` classify against the unified marker. `store.markBilled`
-  + CLI `report --format ledes --bill` record a LEDES invoice as issued. Second export of an entry = no-op.
-- **Rate snapshot at review** — `client-billing.reviewRateSnapshot` freezes `config.rate` onto the override
-  the first time `reviewed` flips true (wired into `server.js` `/api/override`); `applyOverride` prices from
-  `entry.rate` (snapshot), so the rate table never reprices historical entries.
-- **M5 LEDES (`ledes.js`)** — `formatUnits` emits exact units (no hardcoded tenths); unit cost = the entry's
-  snapshot rate; `units × unit-cost === line total` at tenths and quarter-hours. Multi-matter files group
-  into one invoice per client/matter (`matterInvoiceNumber`), each with its own INVOICE_NUMBER/INVOICE_TOTAL
-  and per-invoice line numbering.
-- **M6 (`store.js`)** — `scrubForPrivacy` in `store.appendEvent` blanks prompt `detail` when
-  `capturePrompts:false`, at the single choke point every writer (CLI `log`, POST /api/log, extension) passes
-  through.
-- **Fail-loud JSONL (`store.js`)** — `readEvents` throws (naming the line number) on a malformed record
-  instead of silently dropping it.
-- **Clio OAuth (`clio.js`)** — `buildAuthRequest` adds `state` + PKCE (S256); `waitForCode({expectedState,
-  timeoutMs, onListening})` validates state (CSRF) and enforces a callback timeout; `exchangeToken` sends the
-  `code_verifier`.
-- **Stopgap removed** — deleted `src/exports-gate.js` + `test/exports-gate.test.js` and every
-  `BILLABLE_ALLOW_CLIENT_EXPORTS` reference (server, CLI, run.js). Dashboard shows the confirm-minutes UX
-  (est vs confirmed, unconfirmed count); README/ETHICS de-claimed accordingly.
-- New tests: `test/phase4.test.js` (16 cases) wired into `test/run.js`; several existing run.js tests updated
-  to the new confirmed-minutes contract (no tests deleted to go green — the removed exports-gate test pinned a
-  deliberately-superseded stopgap and was replaced by stronger structural tests).
-
-**State of the repo:** all suites green (`npm test` exit 0 across every workspace — books 252, billable 53,
-iolta 18, audit 16, money 22); typecheck clean. Backlog: #16 closed by this PR; #24 stays OPEN for the
-remaining cross-app outbox/Clio item; #17/#18 (Phase 4), #14 (Phase 3), #11/#15 (Phase 2), #12/#13/#20
-(Phase 1) closed. #19 unratified (gates Phases 6–7 only).
-
-**Next session → finish Phase 5's last item, then Phase 6 (epic #25, blocked on #19).** For the Phase 5 tail
-see "Remaining Phase 5 item" above. All money through `@elias/money`, all compliance events through
-`@elias/audit`.
+**Next session → Phase 8 (epic #27, release engineering — parallelizable, the next unblocked work).** Phases
+6 (#25) and 7 (#26) remain BLOCKED on the unratified product decisions in #19 (Decision 3, system of record —
+no sign-off comment yet). Phase 8 items include: iolta `firebase deploy --only firestore:rules` (rules still
+undeployed), iolta's `xlsx`-from-CDN-tarball fragility, deploy config (PORT/env), and general release
+hardening — see #27. All money through `@elias/money`, all compliance events through `@elias/audit`.
 
 **Gotchas (carried forward + new):**
+- **NEW — books transactional outbox:** money handlers now call `store.commit(db, companyId, type, payload)`
+  (or `commitMany(db, companyId, [{type, payload}, ...])`) INSTEAD of `save(db); await audit.append(...)`.
+  If you add a new money mutation, use `commit`, not the old pair — otherwise its audit event is not
+  crash-atomic. commit does enqueue→save→flush; the in-memory `db.outbox` is drained on success. Recovery
+  runs on boot (`outbox.recoverAll`). A new semantic event delivered via commit gets an extra `outboxId`
+  field in its audit payload (idempotency key) — harmless, additive.
+- **NEW — billable Clio intents:** `clio.push_intent` is a ledger event (like `payment_request`), ignored by
+  `buildEntries` (only `prompt`/`tool`/`stop`/`manual` become billable time), so it never becomes billable
+  time. If you change `activityBody`'s shape, `pushKey` (which hashes date/quantity/note) changes too — a
+  content change is intentionally a *different* idempotency key.
 - `npm ci` then `npm run build --workspace @elias/money --workspace @elias/audit` before app tests (apps
   depend on built `dist/`). **After editing `packages/audit` types, rebuild it** or dependents typecheck
   against stale `dist/`. (Phase 4 did NOT touch `@elias/audit` — the new billing events reuse the existing

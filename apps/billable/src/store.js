@@ -183,6 +183,23 @@ function writeOverride(id, patch) {
   return all[id];
 }
 
+// Record a Clio push INTENT before the external POST (transactional outbox).
+// A Clio `POST /activities` that succeeds but dies before the clioId override
+// commits would otherwise re-POST on retry and duplicate the Clio activity.
+// The intent is a durable, hash-chained ledger event (mirroring LawPay's
+// deterministic-reference dedup shape); on retry `clio.pushEntries` sees the
+// dangling intent and reconciles against Clio instead of blindly re-POSTing.
+// `key` is the deterministic idempotency key for this entry's activity.
+function appendClioIntent(key, entryId, clioMatterId) {
+  appendEvent({
+    ts: new Date().toISOString(),
+    type: 'clio.push_intent',
+    key,
+    entryId,
+    clioMatterId,
+  });
+}
+
 // Stamp the single, mutually-exclusive billed marker onto an entry (#18).
 // Once set, every client-facing destination treats the entry as billed, so a
 // second export is a no-op. The write is chained as an override_written audit
@@ -225,6 +242,7 @@ module.exports = {
   readEvents,
   readOverrides,
   writeOverride,
+  appendClioIntent,
   markBilled,
   matterFor,
 };

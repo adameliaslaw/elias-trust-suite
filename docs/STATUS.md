@@ -4,14 +4,17 @@
 > [HOMEWORK.md](HOMEWORK.md) for exactly where to start, then the epic issue for the phase.
 > Canonical plan: [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) · Findings narrative:
 > [EVALUATION.md](EVALUATION.md) · Backlog: GitHub Issues **#11–#27**.
-> Last updated: 2026-07-23 — **Phase 5 (#24) in progress (PR open): data + audit hardening.** 7 of 8 checklist
+> Last updated: 2026-07-23 — **Phase 5 (#24) ✅ done (PR open): data + audit hardening.** All 8 checklist
 > items landed with reproducing tests: fail-closed iolta verify against the recorded head + surfaced offline
 > queue (#16); billable ledger reads the full last line so a >8 KB line no longer self-corrupts the chain (H2);
 > books `/api/audit` now serves the tamper-evident chain, not the forgeable `db.auditLog` (H1); books secrets
 > (Plaid/ACH/employee-bank) are AES-256-GCM encrypted at rest with the key kept out of backups + 0600 files
 > (#24); books GETs no longer mutate state and a tampered chain no longer 400s a read (M8); session cookies
 > gain `Secure` over TLS (L3); per-company mutation serialization (M7); LawPay `markRequested` idempotent on
-> retry. **Remaining:** the broad cross-app transactional-outbox + Clio external-side dedup (see HOMEWORK).
+> retry. **The last item now closed:** Clio `pushEntries` records a durable pre-POST intent and reconciles a
+> dangling one instead of re-POSTing (no duplicate Clio activity on retry); books money mutations commit
+> atomically with their audit append via a transactional outbox (owed event rides in the company JSON,
+> delivered idempotently, recovered on boot).
 > Prior: Phase 4 (#23) complete: Matterproof billing redesign. AI runtime is
 > cost/provenance metadata only — inferred attorney time defaults to **zero**; a billable minute exists only
 > once an attorney confirms human minutes (#17). Client exports are reviewed-only, mutually exclusive, and
@@ -72,6 +75,18 @@ The previous STATUS asserted "480 checks green" and a sound audit/reconciliation
   `data/.secret.key` **excluded from backups** (ciphertext-only tarballs); company files + global.json written
   0600. Also H1 (`/api/audit` shows the tamper-evident chain), H2 (billable >8 KB line), M7 (per-company
   mutation lock), M8 (GETs read-only), L3 (Secure cookie over TLS). Reproducing tests throughout.
+- ✅ **FIXED (#24, Phase 5 — atomicity/idempotency, final item)** — the cross-app write-atomicity work.
+  billable Clio `pushEntries` (`apps/billable/src/clio.js`) records a durable, hash-chained pre-POST intent
+  (`clio.push_intent` ledger event, mirroring LawPay's deterministic-reference dedup); on retry a dangling
+  intent triggers a reconcile query that adopts the existing Clio activity instead of re-POSTing (POSTs only
+  when the prior attempt never landed, fails closed on ambiguity), so a crash between a successful POST and
+  `store.writeOverride({clioId})` no longer duplicates the Clio activity. books money mutations now commit
+  atomically with their audit append via a transactional outbox (`apps/books/lib/outbox.js`): the owed audit
+  event rides inside the atomically-saved company JSON, a relay delivers it to the tamper-evident chain
+  idempotently (`audit.appendIdempotent`, keyed on the outbox message id), and boot-time `recoverAll`
+  redelivers anything a crash interrupted — closing the silent-gap window between `save()` and
+  `audit.append()`. `store.commit`/`commitMany` replaced the non-atomic pattern in every money handler.
+  Reproducing tests in `apps/billable/test/run.js` and `apps/books/test/outbox.test.js`.
 - ✅ **FIXED (#17, #18, Phase 4)** — Matterproof no longer invents attorney time. AI runtime is
   cost/provenance metadata only; billable `hours` default to zero and become non-zero solely when an
   attorney confirms human minutes (`entries.js`; `finishTask` records `suggestedHours`, `applyOverride`
@@ -96,7 +111,7 @@ The tests are valuable but largely do not cover these paths.
 | 2 — Rebuild IOLTA accounting model | #21 | ✅ Done — PR open (#11, #15 closed) |
 | 3 — Reconciliation lifecycle + retention | #22 | ✅ Done — PR open (#14 closed) |
 | 4 — Redesign Matterproof billing | #23 | ✅ Done — PR open (#17, #18 fixed) |
-| 5 — Data + audit hardening | #24 | 🟨 In progress — PR open (7/8 items; cross-app outbox/Clio dedup remains) |
+| 5 — Data + audit hardening | #24 | ✅ Done — PR open (8/8; Clio retry dedup + books transactional outbox) |
 | 6 — Books role + `packages/rules` | #25 | ⬜ Blocked on 0 |
 | 7 — Suite integration + `packages/auth` | #26 | ⬜ Blocked on 2–6 |
 | 8 — Release engineering | #27 | ⬜ Parallelizable; finalize last |

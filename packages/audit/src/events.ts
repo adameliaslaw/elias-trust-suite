@@ -303,6 +303,14 @@ export interface TrustImportConfirmedPayload {
   rejected?: number;
 }
 
+// Transactional-outbox idempotency token (books, #24). When a books money
+// mutation and its audit event are committed as one crash-atomic unit, the
+// owed event is delivered through a transactional outbox (apps/books/lib/
+// outbox.js). To make a post-crash redelivery a no-op, the delivered payload
+// carries an extra `outboxId` string — the outbox message id the chain dedups
+// on. It is additive metadata: it never replaces a semantic field, and every
+// verifier hashes the payload verbatim, so a payload with or without it
+// verifies identically.
 export interface AuditEventPayloads {
   'reconciliation.completed': ReconciliationCompletedPayload;
   'reconciliation.reopened': ReconciliationReopenedPayload;

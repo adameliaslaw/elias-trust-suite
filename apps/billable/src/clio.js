@@ -214,18 +214,95 @@ function activityBody(entry, clioMatterId, config) {
   };
 }
 
+// Deterministic idempotency key for one entry's push. Stable across retries
+// (so a resumed push recognizes its own earlier intent) and sensitive to the
+// pushed content (a genuinely different activity yields a different key). This
+// is the Clio analogue of LawPay's deterministic `reference`.
+function pushKey(entry, clioMatterId, config) {
+  const { data } = activityBody(entry, clioMatterId, config);
+  return 'CLIO-' + crypto
+    .createHash('sha1')
+    .update(JSON.stringify([entry.id, String(clioMatterId), data.date, data.quantity, data.note]))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+// The set of push keys that already have a durable pre-POST intent recorded.
+function recordedIntentKeys(events) {
+  const keys = new Set();
+  for (const ev of events) if (ev.type === 'clio.push_intent' && ev.key) keys.add(ev.key);
+  return keys;
+}
+
+// Recover a DANGLING intent: the intent was recorded (and the POST may or may
+// not have reached Clio) but the process died before the clioId override
+// committed. Re-POSTing would risk a duplicate Clio activity, so instead query
+// Clio for the activity this intent intended to create.
+//   - exactly one unclaimed match  -> adopt its id (no re-POST)
+//   - no match                     -> the POST never landed; caller may POST
+//   - more than one match          -> ambiguous; fail closed for a human
+// A match is the intended (matter, date, quantity, note) not already recorded
+// as some other entry's clioId.
+async function reconcilePush(entry, clioMatterId, config, fetchImpl) {
+  const { data: intended } = activityBody(entry, clioMatterId, config);
+  const res = await api(
+    config, 'GET',
+    `/activities.json?fields=id,date,quantity,note,matter{id}&matter_id=${encodeURIComponent(clioMatterId)}&limit=200`,
+    undefined, fetchImpl
+  );
+  const claimed = new Set(
+    Object.values(store.readOverrides())
+      .map((o) => o && o.clioId)
+      .filter((id) => id != null && id !== '')
+      .map(String)
+  );
+  const matches = (res.data || []).filter((a) =>
+    a.date === intended.date &&
+    Number(a.quantity) === intended.quantity &&
+    (a.note || '') === (intended.note || '') &&
+    a.matter && String(a.matter.id) === String(clioMatterId) &&
+    !claimed.has(String(a.id))
+  );
+  if (matches.length === 1) return matches[0].id;
+  if (matches.length === 0) return null;
+  throw new Error(
+    `Clio reconcile ambiguous for entry ${entry.id}: ${matches.length} matching activities in matter ` +
+    `${clioMatterId} — resolve the duplicate in Clio, then retry (billable clio push).`
+  );
+}
+
 async function pushEntries(entries, config, overrides, { dryRun = false, fetchImpl = fetch } = {}) {
   const { ready, skipped } = classifyForPush(entries, config, overrides);
   const results = [];
+  // Read the durable intents once so a batch retry recognizes prior attempts.
+  const intents = dryRun ? new Set() : recordedIntentKeys(store.readEvents());
   for (const { entry, clioMatterId } of ready) {
     if (dryRun) {
       results.push({ id: entry.id, dryRun: true, clioMatterId });
       continue;
     }
-    const res = await api(config, 'POST', '/activities.json', activityBody(entry, clioMatterId, config), fetchImpl);
-    const clioId = res.data && res.data.id;
+    const key = pushKey(entry, clioMatterId, config);
+    let clioId;
+    let reconciled = false;
+    if (intents.has(key)) {
+      // A prior attempt already recorded this intent and may have POSTed.
+      // Reconcile before doing anything irreversible.
+      const existing = await reconcilePush(entry, clioMatterId, config, fetchImpl);
+      if (existing != null) {
+        clioId = existing;
+        reconciled = true;
+      }
+    } else {
+      // Fresh push: record the intent BEFORE the POST so a crash between the
+      // POST and the clioId commit is recoverable (reconcile, don't re-POST).
+      store.appendClioIntent(key, entry.id, clioMatterId);
+    }
+    if (clioId == null) {
+      const res = await api(config, 'POST', '/activities.json', activityBody(entry, clioMatterId, config), fetchImpl);
+      clioId = res.data && res.data.id;
+    }
     store.writeOverride(entry.id, { clioId });
-    results.push({ id: entry.id, clioId });
+    results.push(reconciled ? { id: entry.id, clioId, reconciled } : { id: entry.id, clioId });
   }
   return { results, skipped };
 }
@@ -233,4 +310,5 @@ async function pushEntries(entries, config, overrides, { dryRun = false, fetchIm
 module.exports = {
   authUrl, buildAuthRequest, connect, listMatters, pushEntries,
   classifyForPush, activityBody, exchangeToken, waitForCode,
+  pushKey, reconcilePush,
 };

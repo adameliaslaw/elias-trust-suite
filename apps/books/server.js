@@ -3,7 +3,8 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { load, save, companies, createCompany, uid, decorateInvoice, round2, todayISO } = require('./lib/store');
+const { load, save, commit, commitMany, companies, createCompany, uid, decorateInvoice, round2, todayISO } = require('./lib/store');
+const outbox = require('./lib/outbox');
 const money = require('./lib/money');
 const { loadGlobal, saveGlobal, taxProfileForYear } = require('./lib/global');
 const tax1040 = require('./lib/tax1040');
@@ -223,9 +224,9 @@ route('PUT', '/api/settings', async (req, res, db) => {
       monthlyRemitter: !!b.salesTax.monthlyRemitter
     };
   }
-  save(db);
-  // Keys only — values can carry secrets; which knob turned cannot.
-  await audit.append(req.companyId, 'settings.changed', {
+  // Keys only — values can carry secrets; which knob turned cannot. Atomic
+  // with the save (#24): the mutation and its audit event commit as one unit.
+  await commit(db, req.companyId, 'settings.changed', {
     keys: Object.keys(b), actor: audit.actor(req)
   });
   // Keep the household company registry in sync with the display name.
@@ -339,14 +340,17 @@ function createInvoice(db, b) {
 async function generateRecurring(db, companyId, actor) {
   const created = recurring.generateDue(db, createInvoice, todayISO());
   if (created.length) {
-    save(db);
-    for (const inv of created) {
-      await audit.append(companyId, 'invoice.created', {
+    // Persist the generated invoices and their audit events as one atomic unit
+    // (#24) so a crash can't leave a materialized recurring invoice off the
+    // tamper-evident chain.
+    await commitMany(db, companyId, created.map(inv => ({
+      type: 'invoice.created',
+      payload: {
         invoiceId: inv.id, clientId: inv.customerId,
         totalCents: audit.centsStr(decorateInvoice(inv).total),
         source: 'recurring', actor
-      });
-    }
+      }
+    })));
   }
   return created;
 }
@@ -382,8 +386,7 @@ route('POST', '/api/invoices', async (req, res, db) => {
   } catch (e) {
     return badRequest(res, e.message);
   }
-  save(db);
-  await audit.append(req.companyId, 'invoice.created', {
+  await commit(db, req.companyId, 'invoice.created', {
     invoiceId: inv.id, clientId: inv.customerId,
     totalCents: audit.centsStr(decorateInvoice(inv).total),
     source: 'manual', actor: audit.actor(req)
@@ -403,8 +406,7 @@ route('PUT', '/api/invoices/:id', async (req, res, db, params) => {
     inv.items = b.items.map(it => ({ description: String(it.description).trim(), qty: Number(it.qty), rate: round2(Number(it.rate)), taxable: !!it.taxable }));
     inv.taxRate = inv.items.some(it => it.taxable) ? (inv.taxRate || salestax.salesTaxSettings(db).ratePct) : 0;
   }
-  save(db);
-  await audit.append(req.companyId, 'invoice.updated', {
+  await commit(db, req.companyId, 'invoice.updated', {
     invoiceId: inv.id, totalCents: audit.centsStr(decorateInvoice(inv).total),
     changedFields: Object.keys(b), actor: audit.actor(req)
   });
@@ -418,8 +420,7 @@ route('DELETE', '/api/invoices/:id', async (req, res, db, params) => {
   db.invoices.splice(idx, 1);
   // Release any time entries billed on this invoice back to unbilled WIP.
   for (const t of db.timeEntries) if (t.invoiceId === params.id) t.invoiceId = null;
-  save(db);
-  await audit.append(req.companyId, 'invoice.deleted', {
+  await commit(db, req.companyId, 'invoice.deleted', {
     invoiceId: params.id, totalCents: audit.centsStr(deletedTotal), actor: audit.actor(req)
   });
   sendJSON(res, 200, { ok: true });
@@ -434,8 +435,7 @@ route('POST', '/api/invoices/:id/payments', async (req, res, db, params) => {
   if (amount > balance + 0.005) return badRequest(res, `Payment exceeds remaining balance ($${balance.toFixed(2)})`);
   inv.payments.push({ id: uid(), date: b.date || todayISO(), amount: round2(amount), method: b.method || 'Other' });
   inv.draft = false;
-  save(db);
-  await audit.append(req.companyId, 'invoice.payment_recorded', {
+  await commit(db, req.companyId, 'invoice.payment_recorded', {
     invoiceId: inv.id, paymentCents: audit.centsStr(amount), actor: audit.actor(req)
   });
   sendJSON(res, 200, decorateInvoice(inv));
@@ -444,9 +444,8 @@ route('POST', '/api/invoices/:id/send', async (req, res, db, params) => {
   const inv = db.invoices.find(x => x.id === params.id);
   if (!inv) return notFound(res);
   inv.draft = false;
-  save(db);
   const customer = db.customers.find(c => c.id === inv.customerId);
-  await audit.append(req.companyId, 'invoice.sent', {
+  await commit(db, req.companyId, 'invoice.sent', {
     invoiceId: inv.id, clientId: inv.customerId,
     amountCents: audit.centsStr(decorateInvoice(inv).total),
     sentBy: audit.actor(req), sentTo: (customer && customer.email) || ''
@@ -513,10 +512,9 @@ route('POST', '/api/sales/import-csv', async (req, res, db) => {
   if (!taxOn && parsed.days.some(d => d.tax > 0)) {
     warnings.unshift('The POS collected sales tax but this company has sales tax turned off in Settings — imported sales were booked without tax');
   }
-  save(db);
   // One batch event (not per-invoice): the chain records the import itself,
-  // with the exact total of what it booked.
-  await audit.append(req.companyId, 'sales.imported', {
+  // with the exact total of what it booked — atomic with the save (#24).
+  await commit(db, req.companyId, 'sales.imported', {
     rowCount: imported, totalCents: audit.centsStr(importedTotal), source: 'csv', actor: audit.actor(req)
   });
   sendJSON(res, 200, { imported, duplicates, tipsTotal: parsed.tipsTotal, skipped: parsed.info.skipped, warnings });
@@ -577,8 +575,7 @@ route('POST', '/api/time', async (req, res, db) => {
   const { error, entry } = timetracking.sanitizeEntry(b, db);
   if (error) return badRequest(res, error);
   db.timeEntries.push(entry);
-  save(db);
-  await audit.append(req.companyId, 'time_entry.created', {
+  await commit(db, req.companyId, 'time_entry.created', {
     entryId: entry.id, customerId: entry.customerId,
     hours: String(entry.hours), rateCents: audit.centsStr(entry.rate), actor: audit.actor(req)
   });
@@ -592,8 +589,7 @@ route('PUT', '/api/time/:id', async (req, res, db, params) => {
   const { error, entry } = timetracking.sanitizeEntry(b, db, db.timeEntries[idx]);
   if (error) return badRequest(res, error);
   db.timeEntries[idx] = entry;
-  save(db);
-  await audit.append(req.companyId, 'time_entry.updated', {
+  await commit(db, req.companyId, 'time_entry.updated', {
     entryId: entry.id, customerId: entry.customerId,
     hours: String(entry.hours), rateCents: audit.centsStr(entry.rate), actor: audit.actor(req)
   });
@@ -605,8 +601,7 @@ route('DELETE', '/api/time/:id', async (req, res, db, params) => {
   if (db.timeEntries[idx].invoiceId) return badRequest(res, 'This entry is on an invoice. Delete the invoice to release it.');
   const removed = db.timeEntries[idx];
   db.timeEntries.splice(idx, 1);
-  save(db);
-  await audit.append(req.companyId, 'time_entry.deleted', {
+  await commit(db, req.companyId, 'time_entry.deleted', {
     entryId: removed.id, customerId: removed.customerId,
     hours: String(removed.hours), rateCents: audit.centsStr(removed.rate), actor: audit.actor(req)
   });
@@ -632,8 +627,7 @@ route('POST', '/api/time/invoice', async (req, res, db) => {
     return badRequest(res, e.message);
   }
   for (const t of entries) t.invoiceId = inv.id;
-  save(db);
-  await audit.append(req.companyId, 'invoice.created', {
+  await commit(db, req.companyId, 'invoice.created', {
     invoiceId: inv.id, clientId: inv.customerId,
     totalCents: audit.centsStr(decorateInvoice(inv).total),
     source: 'time', actor: audit.actor(req)
@@ -661,8 +655,7 @@ route('POST', '/api/expenses', async (req, res, db) => {
     createdAt: todayISO()
   };
   db.expenses.push(exp);
-  save(db);
-  await audit.append(req.companyId, 'expense.created', {
+  await commit(db, req.companyId, 'expense.created', {
     expenseId: exp.id, amountCents: audit.centsStr(exp.amount), category: exp.category, actor: audit.actor(req)
   });
   sendJSON(res, 201, exp);
@@ -675,8 +668,7 @@ route('PUT', '/api/expenses/:id', async (req, res, db, params) => {
   if (err) return badRequest(res, err);
   for (const k of ['date', 'vendor', 'category', 'paymentMethod', 'notes']) if (k in b) exp[k] = b[k];
   if ('amount' in b) exp.amount = round2(Number(b.amount));
-  save(db);
-  await audit.append(req.companyId, 'expense.updated', {
+  await commit(db, req.companyId, 'expense.updated', {
     expenseId: exp.id, amountCents: audit.centsStr(exp.amount), category: exp.category, actor: audit.actor(req)
   });
   sendJSON(res, 200, exp);
@@ -687,8 +679,7 @@ route('DELETE', '/api/expenses/:id', async (req, res, db, params) => {
   const removed = db.expenses[idx];
   receipts.deleteReceipt(removed.receipt);
   db.expenses.splice(idx, 1);
-  save(db);
-  await audit.append(req.companyId, 'expense.deleted', {
+  await commit(db, req.companyId, 'expense.deleted', {
     expenseId: removed.id, amountCents: audit.centsStr(removed.amount), category: removed.category, actor: audit.actor(req)
   });
   sendJSON(res, 200, { ok: true });
@@ -909,10 +900,9 @@ route('POST', '/api/bank/sync', async (req, res, db) => {
       errors.push(`${conn.institution}: ${e.message}`);
     }
   }
-  save(db);
   // Exact signed net of the newly imported feed items (they are appended).
   const net = money.sum(...db.bankTransactions.slice(beforeLen).map(t => t.amount));
-  await audit.append(req.companyId, 'bank.transactions_imported', {
+  await commit(db, req.companyId, 'bank.transactions_imported', {
     count: added, netCents: audit.centsStr(net), source: 'sync', actor: audit.actor(req)
   });
   sendJSON(res, 200, { added, errors, connections: db.bankConnections.map(publicConnection) });
@@ -953,8 +943,7 @@ route('POST', '/api/bank/import-csv', async (req, res, db) => {
     added++;
     net = money.add(net, amount);
   }
-  save(db);
-  await audit.append(req.companyId, 'bank.transactions_imported', {
+  await commit(db, req.companyId, 'bank.transactions_imported', {
     count: added, netCents: audit.centsStr(net), source: 'csv', actor: audit.actor(req)
   });
   sendJSON(res, 200, { added, duplicates, skipped });
@@ -1207,8 +1196,7 @@ route('POST', '/api/payroll/runs', async (req, res, db) => {
   try {
     const run = payroll.newRun(db, b);
     db.payRuns.push(run);
-    save(db);
-    await audit.append(req.companyId, 'payroll.run_created', {
+    await commit(db, req.companyId, 'payroll.run_created', {
       runId: run.id, payPeriod: `${run.periodStart}–${run.periodEnd}`, actor: audit.actor(req)
     });
     sendJSON(res, 201, run);
@@ -1322,27 +1310,34 @@ route('POST', '/api/payroll/runs/:id/finalize', async (req, res, db, params) => 
   };
   db.expenses.push(exp);
   run.postedExpenseId = exp.id;
-  save(db);
   // The compliance record of money leaving: one summary event plus one
   // payroll.payment per employee, keyed deterministically so a retried
   // finalize cannot double-record (the run.status guard already prevents
-  // a second finalize; the key makes that explicit in the chain).
+  // a second finalize; the key makes that explicit in the chain). All of it
+  // is atomic with the save (#24): the finalized run and every payment event
+  // commit as one unit — a crash can't post the run without its payments.
   const payPeriod = `${run.periodStart}–${run.periodEnd}`;
-  await audit.append(req.companyId, 'payroll.run_finalized', {
-    runId: run.id, payPeriod, employeeCount: run.checks.length,
-    totalNetCents: audit.centsStr(run.totals.net), actor: audit.actor(req)
-  });
-  for (const chk of run.checks) {
-    await audit.append(req.companyId, 'payroll.payment', {
-      paymentId: `${run.id}:${chk.employeeId}`,
-      employeeId: chk.employeeId,
-      amountCents: audit.centsStr(chk.computed.net),
-      payPeriod,
-      method: 'ach',
-      initiatedBy: audit.actor(req),
-      idempotencyKey: `${run.id}:${chk.employeeId}`
-    });
-  }
+  await commitMany(db, req.companyId, [
+    {
+      type: 'payroll.run_finalized',
+      payload: {
+        runId: run.id, payPeriod, employeeCount: run.checks.length,
+        totalNetCents: audit.centsStr(run.totals.net), actor: audit.actor(req)
+      }
+    },
+    ...run.checks.map(chk => ({
+      type: 'payroll.payment',
+      payload: {
+        paymentId: `${run.id}:${chk.employeeId}`,
+        employeeId: chk.employeeId,
+        amountCents: audit.centsStr(chk.computed.net),
+        payPeriod,
+        method: 'ach',
+        initiatedBy: audit.actor(req),
+        idempotencyKey: `${run.id}:${chk.employeeId}`
+      }
+    }))
+  ]);
   sendJSON(res, 200, run);
 });
 
@@ -1519,8 +1514,7 @@ route('POST', '/api/payroll/liabilities/deposit', async (req, res, db) => {
   db.expenses.push(exp);
   const dep = { id: uid(), bucket: b.bucket, periodKey: b.periodKey || '', amount, date: exp.date, note: b.note || '', expenseId: exp.id };
   db.payrollDeposits.push(dep);
-  save(db);
-  await audit.append(req.companyId, 'payroll.deposit_recorded', {
+  await commit(db, req.companyId, 'payroll.deposit_recorded', {
     depositId: dep.id, amountCents: audit.centsStr(amount), period: dep.periodKey, actor: audit.actor(req)
   });
   sendJSON(res, 200, { deposit: dep, expense: exp, buckets: payroll.liabilities(db) });
@@ -1902,8 +1896,7 @@ route('POST', '/api/salestax/remit', async (req, res, db) => {
     note: b.note || ''
   };
   db.salesTaxRemittances.push(rec);
-  save(db);
-  await audit.append(req.companyId, 'salestax.remitted', {
+  await commit(db, req.companyId, 'salestax.remitted', {
     remittanceId: rec.id, amountCents: audit.centsStr(amount), period: rec.periodKey, actor: audit.actor(req)
   });
   const cfg = salestax.salesTaxSettings(db);
@@ -2194,6 +2187,10 @@ const server = http.createServer((req, res) => {
 
 if (require.main === module) {
   seedIfEmpty();
+  // Redeliver any audit events a crash left owed in a company's outbox before
+  // serving — a persisted mutation must never stay off the tamper-evident chain
+  // (#24). Best-effort + logged: never fatal to boot.
+  outbox.recoverAll(companies, load, save).catch(e => console.error('outbox recovery error:', e.message));
   backup.scheduleSnapshots();   // tar the data dir now and daily, keep 7
   scheduleRecurring();          // materialize due recurring invoices now and daily (never on a GET)
   if (auth.authDisabled()) {

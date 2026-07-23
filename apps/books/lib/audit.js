@@ -44,6 +44,19 @@ async function append(companyId, type, payload) {
   await log.append(type, payload);
 }
 
+// Idempotent append keyed by an outbox message id (see lib/outbox.js). The
+// transactional outbox may replay a delivery after a crash between the append
+// and the outbox-clear; carrying `outboxId` in the payload lets a replay detect
+// its own earlier append (the chain is the only durable record of "delivered")
+// and skip it, so a money mutation's audit event is recorded exactly once.
+async function appendIdempotent(companyId, type, payload, outboxId) {
+  const log = await openLog(companyId);
+  if (outboxId && log.entries().some(e => e.payload && e.payload.outboxId === outboxId)) {
+    return; // already delivered by an earlier (crashed) flush
+  }
+  await log.append(type, outboxId ? { ...payload, outboxId } : payload);
+}
+
 async function verify(companyId) {
   // Deliberately NOT the cached writer: verification must REPORT a broken
   // chain ({ok:false, atSeq}), not throw on open. Appends keep fail-loud
@@ -88,4 +101,4 @@ function _reset() {
   logs.clear();
 }
 
-module.exports = { append, verify, entries, centsStr, actor, chainFile, _reset };
+module.exports = { append, appendIdempotent, verify, entries, centsStr, actor, chainFile, _reset };
