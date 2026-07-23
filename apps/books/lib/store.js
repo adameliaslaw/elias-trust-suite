@@ -6,6 +6,7 @@ const path = require('path');
 const { loadGlobal, saveGlobal, DATA_DIR } = require('./global');
 const { round2, mul, percentOf, sum, add, sub } = require('./money');
 const secrets = require('./secrets');
+const outbox = require('./outbox');
 
 const FILE_KEY = Symbol('dbFile');
 const dbs = new Map();   // companyId -> db object
@@ -41,7 +42,11 @@ function defaultData(companyName) {
     bankRules: [],
     timeEntries: [],
     vendors1099: [],
-    auditLog: []
+    auditLog: [],
+    // Transactional outbox (#24): audit events owed by a persisted mutation but
+    // not yet delivered to the tamper-evident chain. Rides in this file so it
+    // commits atomically with the mutation; drained by lib/outbox.js.
+    outbox: []
   };
 }
 
@@ -62,6 +67,7 @@ function migrate(db) {
   db.timeEntries = db.timeEntries || [];
   db.vendors1099 = db.vendors1099 || [];
   db.auditLog = db.auditLog || [];
+  db.outbox = db.outbox || [];
   if (!db.expenseCategories.includes('Payroll Taxes')) {
     db.expenseCategories.splice(db.expenseCategories.indexOf('Payroll') + 1, 0, 'Payroll Taxes');
   }
@@ -140,6 +146,26 @@ function save(db) {
   try { fs.chmodSync(file, 0o600); } catch { /* platform without POSIX modes */ }
 }
 
+// Transactional commit (#24): persist the caller's already-applied db mutation
+// and deliver its audit event(s) as ONE crash-atomic unit. Replaces the
+// non-atomic `save(db); await audit.append(...)` pattern — the owed event rides
+// in the same atomic save as the mutation, then a relay delivers it. Use
+// `commit` for a single event, `commitMany` for a handler that records several.
+function commit(db, companyId, type, payload) {
+  return outbox.commit(db, companyId, save, [{ type, payload }]);
+}
+
+function commitMany(db, companyId, events) {
+  return outbox.commit(db, companyId, save, events);
+}
+
+// Test hook: forget cached db objects so the next load() re-reads from disk
+// (simulates a process restart after a crash).
+function _evict(companyId) {
+  if (companyId) dbs.delete(companyId);
+  else dbs.clear();
+}
+
 // ---- Derived invoice fields ----
 
 // Per-line amounts: qty x rate rounded half-up per LINE (the number the
@@ -200,6 +226,7 @@ function decorateInvoice(inv) {
 }
 
 module.exports = {
-  load, save, companies, createCompany, uid,
-  decorateInvoice, invoiceSubtotal, invoiceTax, invoiceTotal, invoicePaid, round2, todayISO
+  load, save, commit, commitMany, companies, createCompany, uid,
+  decorateInvoice, invoiceSubtotal, invoiceTax, invoiceTotal, invoicePaid, round2, todayISO,
+  _evict
 };
