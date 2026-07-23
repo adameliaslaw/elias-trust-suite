@@ -1,0 +1,27 @@
+{
+  "name": "@elias/rules",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Versioned, effective-date-keyed compliance rule sets. Every constant carries a primary-source citation (IRS Pub 15-T line, N.J.S.A./N.J.A.C. §, NACHA spec). Single source of truth for tax/withholding/ACH parameters.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

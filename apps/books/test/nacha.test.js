@@ -79,10 +79,15 @@ check('PPD file pays employees with correct totals and tx codes', () => {
   const lines = content.trim().split('\n');
   assert.strictEqual(lines.length % 10, 0);
   lines.forEach((line, i) => assert.strictEqual(line.length, 94, `line ${i} wrong length`));
-  assert.ok(lines[1].startsWith('5200'));                // mixed/credits batch header
+  // A payroll direct-deposit batch is all credits — service class code 220
+  // (ACH credits only), NOT 200 (mixed debits and credits). NACHA Operating
+  // Rules & Guidelines, Appendix Three: Company/Batch Header (field 2) and
+  // Company/Batch Control (field 2), Service Class Code.
+  assert.ok(lines[1].startsWith('5220'), 'batch header must be credits-only (220)');
   assert.ok(lines[1].includes('PPD'));
   assert.ok(lines[2].startsWith('622'));                 // checking credit
   assert.ok(lines[3].startsWith('632'));                 // savings credit
+  assert.ok(lines[4].startsWith('8220'), 'batch control must match service class 220');
   const totalCents = Math.round((1792.86 + 2674.53) * 100);
   assert.ok(lines[4].includes(String(totalCents).padStart(12, '0')));
 });

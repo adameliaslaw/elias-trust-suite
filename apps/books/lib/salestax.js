@@ -30,15 +30,30 @@ function salesTaxSettings(db) {
   };
 }
 
+// The invoice's tax/total ratio at the moment a payment is received. Storing
+// this on the payment freezes the income vs. sales-tax-trust split so a later
+// retroactive edit to the invoice's lines or rate cannot restate a prior
+// period's income or trust liability (N.J.S.A. 54:32B — collected tax is held
+// in trust; the amount held is fixed when the money comes in).
+function taxSplitSnapshot(decoratedInv) {
+  return { tax: decoratedInv.tax || 0, total: decoratedInv.total || 0 };
+}
+
 // Split one payment into (income, tax) on a cash basis, proportional to the
-// invoice's subtotal/tax split. Invoices without tax pass through unchanged.
+// invoice's subtotal/tax split. A payment carrying a `taxSnapshot` (recorded
+// when the money was received) is split against that frozen ratio; only
+// legacy payments with no snapshot fall back to the invoice's current ratio.
+// Invoices without tax pass through unchanged.
 function paymentIncomeParts(decoratedInv, payment) {
   const amount = Number(payment.amount) || 0;
-  if (!(decoratedInv.tax > 0) || !(decoratedInv.total > 0)) {
+  const snap = payment.taxSnapshot;
+  const ratioTax = snap ? (Number(snap.tax) || 0) : decoratedInv.tax;
+  const ratioTotal = snap ? (Number(snap.total) || 0) : decoratedInv.total;
+  if (!(ratioTax > 0) || !(ratioTotal > 0)) {
     return { income: round2(amount), tax: 0 };
   }
   // Proportional split in exact integer cents — no float ratio.
-  const tax = shareOf(amount, decoratedInv.tax, decoratedInv.total);
+  const tax = shareOf(amount, ratioTax, ratioTotal);
   return { income: sub(amount, tax), tax };
 }
 
@@ -132,6 +147,6 @@ function summary(db, year, cfg, todayIso) {
 
 module.exports = {
   NJ_SALES_TAX_RATE, NJ_UEZ_RATE, ST51_MONTHLY_THRESHOLD,
-  salesTaxSettings, paymentIncomeParts, collectedInRange, remittedFor,
+  salesTaxSettings, paymentIncomeParts, taxSplitSnapshot, collectedInRange, remittedFor,
   schedule, summary
 };

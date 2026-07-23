@@ -48,6 +48,37 @@ check('partial payment splits proportionally (cash basis)', () => {
   assert.strictEqual(parts.income, 480);
 });
 
+check('editing a paid invoice does NOT restate a prior payment (snapshot at payment time)', () => {
+  // Money comes in against the taxable invoice: snapshot the split as it stands.
+  const inv = invoice();
+  const atPayment = decorateInvoice(inv);
+  const payment = {
+    amount: 1266.25, date: '2026-04-05',
+    taxSnapshot: S.taxSplitSnapshot(atPayment)   // { tax: 66.25, total: 1266.25 }
+  };
+  const before = S.paymentIncomeParts(atPayment, payment);
+  assert.strictEqual(before.income, 1200);
+  assert.strictEqual(before.tax, 66.25);
+
+  // Later, someone retroactively edits the invoice — drops the tax entirely.
+  inv.taxRate = 0;
+  inv.items[0].taxable = false;
+  const afterEdit = decorateInvoice(inv);
+  assert.strictEqual(afterEdit.tax, 0);   // the invoice now shows no tax
+
+  // The already-received payment keeps its frozen split — the $66.25 of
+  // trust-fund sales tax is NOT retroactively reclassified as income.
+  const after = S.paymentIncomeParts(afterEdit, payment);
+  assert.strictEqual(after.tax, 66.25);
+  assert.strictEqual(after.income, 1200);
+
+  // Without a snapshot (legacy payment), the same edit WOULD restate it —
+  // this is the exact behavior the snapshot prevents.
+  const legacy = S.paymentIncomeParts(afterEdit, { amount: 1266.25 });
+  assert.strictEqual(legacy.tax, 0);
+  assert.strictEqual(legacy.income, 1266.25);
+});
+
 const fixtureDb = (payments, remittances = []) => ({
   invoices: [invoice(payments)],
   salesTaxRemittances: remittances
