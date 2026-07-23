@@ -4,7 +4,7 @@
 > [HOMEWORK.md](HOMEWORK.md) for exactly where to start, then the epic issue for the phase.
 > Canonical plan: [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) · Findings narrative:
 > [EVALUATION.md](EVALUATION.md) · Backlog: GitHub Issues **#11–#27**.
-> Last updated: 2026-07-23 — **Phase 6 (#25) 🟨 in progress — PR 1 MERGED (#36, squashed to `main` as
+> Last updated: 2026-07-23 (later) — **Phase 6 (#25) 🟨 in progress — PR 1 MERGED (#36, squashed to `main` as
 > `361e900`): `packages/rules` moat + payroll retrofit + payroll/tax correctness fixes (6/8 boxes). PR 2 MERGED
 > (#37, `298d948`): began the `server.js` split — sales-tax + reports route group extracted behind the
 > 252-check smoke suite. PR 3 MERGED (#38, `cdcd631`): expenses route group extracted (same pattern). PR 4 MERGED
@@ -12,8 +12,12 @@
 > extracted (6 handlers). PR 6 MERGED (#41, `b04f01e`): recurring route group extracted (4 handlers). PR 7 MERGED
 > (#42, `1b3e33b`): household route group extracted (8 handlers). PR 8 MERGED (#43, `2886521`): payroll route
 > group extracted (19 handlers). PR 9 MERGED (#44, `1f348f1`): bank feed route group extracted (17 handlers,
-> `server.js` 1081 → 777 lines). PR 10 open (#45): extract the invoices route group — the last big domain group
-> (8 handlers incl. sales-import, `server.js` 777 → 629 lines).**
+> `server.js` 1081 → 777 lines). PR 10 MERGED (#45, `40a8dee`): invoices route group extracted — the last big
+> domain group (8 handlers incl. sales-import, `server.js` 777 → 629 lines). PR 11 open (#46): extract the last
+> two inline clusters — auth/companies/settings (10 handlers) into `lib/routes/auth.js` + audit/backup tail (3
+> read-only GETs) into `lib/routes/audit.js` — which FINISHES the "split `server.js`" box (`server.js` 629 → 493
+> lines; all 11 route groups now in `lib/routes/*`). One structural box left: schema migrations/roles/durable
+> storage.**
 > Phase 5 (#24) ✅ done + MERGED (PR #34); Phase 0 (#19) ✅ ratified
 > (D1=C, D2=B, D3=C split-by-domain, D4=B). Phase 5 = data + audit hardening; all 8 checklist
 > items landed with reproducing tests: fail-closed iolta verify against the recorded head + surfaced offline
@@ -123,7 +127,7 @@ The tests are valuable but largely do not cover these paths.
 | 3 — Reconciliation lifecycle + retention | #22 | ✅ Done (#14 closed) |
 | 4 — Redesign Matterproof billing | #23 | ✅ Done (#17, #18 fixed) |
 | 5 — Data + audit hardening | #24 | ✅ Done — PR #34 merged (8/8; Clio retry dedup + books transactional outbox) |
-| 6 — Books role + `packages/rules` | #25 | 🟨 **In progress** — PR 1 MERGED (#36): `@elias/rules` + payroll retrofit + tax fixes (6/8). PR 2 MERGED (#37): `server.js` split begun (sales-tax + reports group). PR 3 MERGED (#38): expenses group. PR 4 MERGED (#39): customers group. PR 5 MERGED (#40): time group. PR 6 MERGED (#41): recurring group. PR 7 MERGED (#42): household group. PR 8 MERGED (#43): payroll group. PR 9 MERGED (#44, `1f348f1`): bank group. PR 10 open (#45): invoices group extracted |
+| 6 — Books role + `packages/rules` | #25 | 🟨 **In progress** — PR 1 MERGED (#36): `@elias/rules` + payroll retrofit + tax fixes (6/8). PR 2 MERGED (#37): `server.js` split begun (sales-tax + reports group). PR 3 MERGED (#38): expenses group. PR 4 MERGED (#39): customers group. PR 5 MERGED (#40): time group. PR 6 MERGED (#41): recurring group. PR 7 MERGED (#42): household group. PR 8 MERGED (#43): payroll group. PR 9 MERGED (#44, `1f348f1`): bank group. PR 10 MERGED (#45, `40a8dee`): invoices group. PR 11 open (#46): auth/companies/settings + audit/backup tail — **finishes the server.js split** (all 11 groups extracted; `server.js` 493 lines) |
 | 7 — Suite integration + `packages/auth` | #26 | ⬜ Blocked on 2–6 (needs 6) |
 | 8 — Release engineering | #27 | ⬜ Parallelizable; finalize last |
 

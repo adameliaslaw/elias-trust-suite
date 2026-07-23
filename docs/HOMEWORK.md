@@ -41,15 +41,16 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 6 (epic #25) — **PR 10**: the ninth slice of the `server.js` split. Branch
-`claude/phase6-invoices-route-extract-ch4p9h` off latest `main` (`1f348f1`); PR **#45 open, referencing #25**
-(`Refs #25`, not `Fixes` — the epic still has structural items left). Pure structural refactor fully covered by
-the 252-check smoke suite (NOT money/tax logic), so per CONTRIBUTING it may land on green CI. **Repo auto-merge
-is DISABLED**, so this session merged it by hand after the `ci` workflow concluded success on the final (docs)
-commit (squash). Checks no new #25 boxes on its own; the "split `server.js`" box stays open until the whole file
-is decomposed across follow-up PRs.
+**Session that just ran:** Phase 6 (epic #25) — **PR 11**: the pass that **FINISHES the "split `server.js`" box**.
+Branch `claude/phase6-server-split-auth-audit` off latest `main` (`40a8dee`); PR **#46 open, referencing #25**
+(`Refs #25`, not `Fixes` — the epic still has ONE structural item left: schema migrations/roles/durable storage).
+Pure structural refactor fully covered by the 252-check smoke suite (NOT money/tax logic), so per CONTRIBUTING it
+may land on green CI. **Repo auto-merge is DISABLED**, so this session merged it by hand after the `ci` workflow
+concluded success on the final (docs) commit (squash). **Checks the "split `server.js`" box on #25** — with these
+two clusters out, all 11 route groups live in `lib/routes/*` and `server.js` is the bootstrap + dispatch + the
+shared invoice/recurring constructors that legitimately stay.
 
-**Context — PR 1 through PR 9 are MERGED.** PR 1 (`@elias/rules` moat + payroll retrofit + four payroll/tax
+**Context — PR 1 through PR 10 are MERGED.** PR 1 (`@elias/rules` moat + payroll retrofit + four payroll/tax
 correctness fixes) landed as **PR #36** → `main` **`361e900`**. PR 2 (sales-tax + reports route group extracted
 into `apps/books/lib/routes/reports.js`) landed as **PR #37** → `main` **`298d948`**. PR 3 (expenses route group
 extracted into `apps/books/lib/routes/expenses.js`) landed as **PR #38** → `main` **`cdcd631`**. PR 4 (customers
@@ -59,62 +60,61 @@ route group extracted into `apps/books/lib/routes/customers.js`) landed as **PR 
 **PR #41** → `main` **`b04f01e`**. PR 7 (household-taxes route group extracted into
 `apps/books/lib/routes/household.js`) landed as **PR #42** → `main` **`1b3e33b`**. PR 8 (payroll route group
 extracted into `apps/books/lib/routes/payroll.js`) landed as **PR #43** → `main` **`2886521`**. PR 9 (bank feed
-route group extracted into `apps/books/lib/routes/bank.js`) landed as **PR #44** → `main` **`1f348f1`**. #25 has
-**6/8 boxes** checked and stays OPEN for the two structural items (server split; schema migrations/roles/durable storage).
+route group extracted into `apps/books/lib/routes/bank.js`) landed as **PR #44** → `main` **`1f348f1`**. PR 10
+(invoices route group extracted into `apps/books/lib/routes/invoices.js`) landed as **PR #45** → `main`
+**`40a8dee`**. With PR 11 the **server-split box closes**; #25 has **7/8 boxes** checked and stays OPEN for the one
+remaining structural item (schema migrations/roles/durable storage).
 
 **What landed this session (behavior-preserving, covered by the existing smoke suite):**
-- **Continued the incremental `server.js` split — the last big domain group.** Extracted the **invoices** route
-  group — the 8 handlers `GET /api/invoices`, `GET /api/invoices/:id`, `POST /api/invoices`,
-  `PUT/DELETE /api/invoices/:id`, `POST /api/invoices/:id/payments`, `POST /api/invoices/:id/send`, and
-  `POST /api/sales/import-csv` (the POS daily-sales CSV import) — verbatim into
-  **`apps/books/lib/routes/invoices.js`**, exported as `(route, deps) => {...}`. `server.js` requires it **in
-  place** (same spot the block sat, between the customers require and the recurring require), so
-  route-registration order is unchanged; the handlers close over an explicit `deps` object (`sendJSON, notFound,
-  badRequest, readBody, uid, todayISO, round2, commit, audit, createInvoice, decorateInvoice, validInvoice,
-  salestax, money, salesimport`) instead of the monolith's module scope. `server.js` 777 → 629 lines.
-- **NOTHING moved in — invoices is the group that threads shared constructors, not owns them.** This is why it
-  was deferred to a dedicated pass. The shared collaborators stay **DEFINED in `server.js`** and are threaded
-  through `deps`, NOT moved: **`createInvoice`** (the invoice constructor — `generateRecurring`, the time group,
-  and sales-import all thread it), **`generateRecurring`** + its `materializeAllRecurring`/`scheduleRecurring`
-  boot sweep (untouched, still in `server.js`), **`validInvoice`** (shared with the recurring group), and
-  **`decorateInvoice`** (from `lib/store`). No inline helper was invoices-only, so — unlike the four bank-only
-  helpers in PR 9 — there was nothing to move *in*. (Note: `createInvoice` is a hoisted `function` declaration,
-  so it is available in the `deps` object literal even though its textual definition sits just below the require
-  call.)
-- **Persistence preserved EXACTLY (do NOT convert `commit`↔`save(db)` in either direction).** Invoices is
-  money-heavy: **every mutation commits through the transactional outbox** — `invoice.created` (POST),
-  `invoice.updated` (PUT), `invoice.deleted` (DELETE), `invoice.payment_recorded` (payments), `invoice.sent`
-  (send), plus the one batch `sales.imported` event from the CSV import. No `save(db)` paths in this group. It
-  carries **two of the three `salestax.taxSplitSnapshot` sites** — the payment push in
-  `POST /api/invoices/:id/payments` and the per-day paid invoice in `POST /api/sales/import-csv` — so `salestax`
-  is threaded (the 3rd site is the bank/match path, now in `bank.js`). The 252-check smoke suite is **identical
-  before/after** and still passes.
+- **Finished the incremental `server.js` split — the two remaining inline clusters.** Extracted both verbatim,
+  each wired in place so route-registration order is unchanged; handlers close over an explicit `deps` object
+  instead of the monolith's module scope. `server.js` **629 → 493 lines**.
+  - **`apps/books/lib/routes/auth.js`** — the **auth/companies/settings** cluster (10 handlers): `GET
+    /api/auth-status`, `POST /api/login`, `POST /api/logout`, `POST /api/password`, `GET/POST /api/companies`,
+    `POST /api/companies/:id/select`, `GET/PUT /api/settings`, `GET /api/categories`. deps: `sendJSON, notFound,
+    badRequest, readBody, loadGlobal, saveGlobal, companies, createCompany, commit, audit, auth, salestax`.
+  - **`apps/books/lib/routes/audit.js`** — the **audit/backup tail** (3 read-only GETs): `GET /api/audit`, `GET
+    /api/audit/chain`, `GET /api/backup`. deps: `sendJSON, todayISO, audit, backup, auth, loadGlobal`.
+- **One helper moved IN, the dispatcher's collaborators stayed OUT.** `secureAttr` (the `; Secure` cookie
+  attribute over TLS, L3) is used ONLY by the auth cluster's cookie-setting handlers (grep-confirmed), so it moved
+  into `auth.js` as an inner function — like `validExpense`/`validCustomer`/the four bank helpers before it.
+  Crucially, **`PUBLIC_ROUTES` and the session/auth middleware stayed in `server.js`**: the request *dispatcher*
+  (`handleRequest`) consults them, not just the handlers, so moving them would have broken auth on every route.
+- **Persistence preserved EXACTLY (no `commit`↔`save(db)` conversions).** This cluster is session/auth-flavored,
+  mostly **non-money**: password + company-registry writes hit the household `global.json` via `saveGlobal()`;
+  `login`/`logout`/`select` only set cookies (login/password also append an `auth.*` audit event directly). The
+  **one** money-adjacent exception is `PUT /api/settings`, which commits `settings.changed` through the
+  transactional outbox — `commit` is threaded, not introduced. The audit/backup tail is entirely read-only —
+  nothing saves or commits; `GET /api/audit` returns `{ verified, entries }` from the tamper-evident chain, not
+  the vestigial `db.auditLog` (H1). The 252-check smoke suite is **identical before/after** and still passes.
 
-**The extraction pattern (follow it for the next group):**
+**The extraction pattern (now complete — kept for reference / future modularization):**
 1. Create `apps/books/lib/routes/<group>.js` exporting `module.exports = function (route, deps) { const {...} = deps; route(method, pattern, handler); ... }`.
 2. Copy the handlers **verbatim** (don't "improve" them — this is a refactor). Identify every free variable
    each handler used from `server.js` module scope and add it to the destructured `deps`. If an inline helper
    FUNCTION (not a require) is used ONLY by the group (grep to confirm), move it in as an inner function;
    requires and shared helpers thread through `deps` (keep the `require` line at the top of `server.js`).
+   **Helpers the dispatcher itself uses (`PUBLIC_ROUTES`, the auth middleware) stay in `server.js`.**
 3. In `server.js`, replace the inline `route(...)` block with `require('./lib/routes/<group>')(route, { ...deps });`
    **at the same location** so registration order is preserved (route order only matters for overlapping
    patterns, but keeping it identical keeps the diff honest and the smoke net exact).
 4. `npm run typecheck` + `npm test --workspace apps/books` must stay green with the **same 252 count**.
 
-**Next session → finish the split (auth/companies/settings + audit/backup tail), then the other structural item:**
-- **Next split slices.** Nine groups are now extracted (reports, expenses, customers, time, recurring,
-  household, payroll, bank, invoices) — **all the big domain groups are done.** What remains in `server.js`'s
-  `route(` map (629 lines): the **auth/companies/settings** routes (login/logout/session, company CRUD/switch,
-  the `/api/settings` GET/PUT) and the **audit/backup tail** (`/api/audit`, backup export/restore). These are the
-  last two clusters; extracting them **finishes the "split `server.js`" box.** Watch for the module-level helpers
-  they close over that you haven't threaded yet (`secureAttr`, `PUBLIC_ROUTES`, the session/auth middleware,
-  `loadGlobal`/`saveGlobal`, the backup require) — thread them through `deps`, don't move shared ones. Grep each
-  handler's free variables before writing the module, exactly as this session did.
-- **Schema migrations / roles / durable storage before any multi-user deploy** (checklist item). Books is a
-  single-file JSON store today; design a migration/versioning story + role model. Gates multi-user. Once **both**
-  structural boxes close, Phase 6 (#25) is done → Phase 7 (#26).
+**`server.js` now (493 lines) is essentially the bootstrap:** requires + config, the shared helpers
+(`sendJSON`/`readBody`/`badRequest`/`notFound`/`inRange`), the `route`/dispatch machinery
+(`route`/`handleRequest`/`withCompanyLock`/`serveStatic`/`PUBLIC_ROUTES`), the shared invoice/recurring
+constructors that legitimately stay (`validInvoice`/`createInvoice`/`generateRecurring`/`materializeAllRecurring`/
+`scheduleRecurring`), and `createServer`/`recoverAll`/`listen`. All eleven route groups are in `lib/routes/*`.
+
+**Next session → the ONE remaining Phase 6 structural item, then rules migration, then Phase 7:**
+- **Schema migrations / roles / durable storage before any multi-user deploy** (the last unchecked #25 box).
+  Books is a single-file JSON store today (`data/company-<id>.json` + `global.json`, whole-file `save()`); design
+  a migration/versioning story (a `schemaVersion` on the store + forward migrations run on load) + a role model
+  (owner vs. read-only vs. bookkeeper, given the household-shared password today). Gates multi-user. Once this box
+  closes, **both** #25 structural items are done → Phase 6 complete → Phase 7 (#26).
 - **Migrate more domains into `@elias/rules`:** sales-tax rate + ST-50/51 calendar, LEDES units, the 1040
-  planner brackets — same cited pattern, so those constants stop being inline literals.
+  planner brackets — same cited pattern, so those constants stop being inline literals. (Correctness/moat, not a
+  #25 checkbox blocker, but the natural next `@elias/rules` work.)
 - Then **Phase 7 (#26)** — suite integration + `packages/auth` (still needs 6).
 - **Phase 8 (#27)** stays parallelizable but "finalize last" (deploy-unblocking infra OK; not the integrated
   release cut).
@@ -160,9 +160,10 @@ new money mutations use `store.commit`/`commitMany`, never `save(db)` + `audit.a
   depend on built `dist/`). **After editing `packages/audit` types, rebuild it** or dependents typecheck
   against stale `dist/`. (Phase 4 did NOT touch `@elias/audit` — the new billing events reuse the existing
   `entry.override_written` chain, so no audit rebuild was needed.)
-- **Do NOT `git checkout apps/billable/bin/billable.js` to drop a `chmod +x` mode diff** — it reverts
-  content too. Use `chmod 644` / `git update-index --chmod=-x`. HEAD mode is `100644`. (The billable test
-  run flips the bit; `chmod 644` before staging cleared it this session too.)
+- **Do NOT `git checkout apps/billable/bin/billable.js` to drop a mode diff** — it reverts content too.
+  **HEAD mode is `100755`** (an earlier handoff said `644` — that is WRONG for this repo state; verified
+  `git ls-files -s` → `100755`). If a test run flips the bit, `chmod 755` to match HEAD, NOT `chmod 644`
+  (`chmod 644` CREATES a diff here). This session's runs did not touch the bit.
 - Lockfile must keep `grep -c msh.team package-lock.json` = 0.
 - **billable's test runner (`test/run.js`) fires async tests WITHOUT awaiting** — they resume after the whole
   synchronous sweep and read whatever `process.env.BILLABLE_HOME` is then set to. A sync test that
