@@ -79,11 +79,6 @@ function inRange(date, from, to) {
 
 // ---------- validation ----------
 
-function validCustomer(b) {
-  if (!b.name || !String(b.name).trim()) return 'Customer name is required';
-  return null;
-}
-
 function validInvoice(b, db) {
   if (!b.customerId || !db.customers.find(c => c.id === b.customerId)) return 'A valid customer is required';
   if (!b.date) return 'Invoice date is required';
@@ -232,54 +227,15 @@ route('PUT', '/api/settings', async (req, res, db) => {
 route('GET', '/api/categories', (req, res, db) => sendJSON(res, 200, db.expenseCategories));
 
 // -- customers --
-route('GET', '/api/customers', (req, res, db) => {
-  const withBalances = db.customers.map(c => {
-    const invs = db.invoices.filter(i => i.customerId === c.id).map(decorateInvoice);
-    return {
-      ...c,
-      openBalance: money.sum(...invs.filter(i => i.status !== 'draft').map(i => i.balance)),
-      totalBilled: money.sum(...invs.filter(i => i.status !== 'draft').map(i => i.total)),
-      invoiceCount: invs.length
-    };
-  });
-  sendJSON(res, 200, withBalances);
-});
-route('POST', '/api/customers', async (req, res, db) => {
-  const b = await readBody(req);
-  const err = validCustomer(b);
-  if (err) return badRequest(res, err);
-  const customer = {
-    id: uid(),
-    name: String(b.name).trim(),
-    company: b.company || '',
-    email: b.email || '',
-    phone: b.phone || '',
-    notes: b.notes || '',
-    createdAt: todayISO()
-  };
-  db.customers.push(customer);
-  save(db);
-  sendJSON(res, 201, customer);
-});
-route('PUT', '/api/customers/:id', async (req, res, db, params) => {
-  const c = db.customers.find(x => x.id === params.id);
-  if (!c) return notFound(res);
-  const b = await readBody(req);
-  const err = validCustomer({ ...c, ...b });
-  if (err) return badRequest(res, err);
-  for (const k of ['name', 'company', 'email', 'phone', 'notes']) if (k in b) c[k] = b[k];
-  save(db);
-  sendJSON(res, 200, c);
-});
-route('DELETE', '/api/customers/:id', (req, res, db, params) => {
-  const idx = db.customers.findIndex(x => x.id === params.id);
-  if (idx === -1) return notFound(res);
-  if (db.invoices.some(i => i.customerId === params.id)) {
-    return badRequest(res, 'Cannot delete a customer with invoices. Delete their invoices first.');
-  }
-  db.customers.splice(idx, 1);
-  save(db);
-  sendJSON(res, 200, { ok: true });
+// Extracted verbatim into lib/routes/customers.js (Phase 6 / #25, third slice of
+// the server split), wired in place so route-registration order is unchanged.
+// Every customer mutation is a non-money path: each calls save(db) directly (no
+// commit). The customer-only validCustomer validator moved into that module
+// (no other callers); decorateInvoice stays shared and is threaded through deps.
+require('./lib/routes/customers')(route, {
+  sendJSON, notFound, badRequest, readBody,
+  uid, todayISO, save,
+  decorateInvoice, money
 });
 
 // -- invoices --
