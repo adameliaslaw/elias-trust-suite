@@ -41,15 +41,15 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 6 (epic #25) — **PR 8**: the seventh slice of the `server.js` split. Branch
-`claude/phase6-server-split-payroll` off latest `main` (`1b3e33b`); PR **open, referencing #25**
+**Session that just ran:** Phase 6 (epic #25) — **PR 9**: the eighth slice of the `server.js` split. Branch
+`claude/phase6-server-split-bank` off latest `main` (`2886521`); PR **#44 open, referencing #25**
 (`Refs #25`, not `Fixes` — the epic still has structural items left). Pure structural refactor fully covered by
 the 252-check smoke suite (NOT money/tax logic), so per CONTRIBUTING it may land on green CI. **Repo auto-merge
 is DISABLED**, so this session merged it by hand after the `ci` workflow concluded success (squash). Checks no
 new #25 boxes on its own; the "split `server.js`" box stays open until the whole file is decomposed across
 follow-up PRs.
 
-**Context — PR 1 through PR 7 are MERGED.** PR 1 (`@elias/rules` moat + payroll retrofit + four payroll/tax
+**Context — PR 1 through PR 8 are MERGED.** PR 1 (`@elias/rules` moat + payroll retrofit + four payroll/tax
 correctness fixes) landed as **PR #36** → `main` **`361e900`**. PR 2 (sales-tax + reports route group extracted
 into `apps/books/lib/routes/reports.js`) landed as **PR #37** → `main` **`298d948`**. PR 3 (expenses route group
 extracted into `apps/books/lib/routes/expenses.js`) landed as **PR #38** → `main` **`cdcd631`**. PR 4 (customers
@@ -57,38 +57,38 @@ route group extracted into `apps/books/lib/routes/customers.js`) landed as **PR 
 (billable-time route group extracted into `apps/books/lib/routes/time.js`) landed as **PR #40** → `main`
 **`635db72`**. PR 6 (recurring-invoice route group extracted into `apps/books/lib/routes/recurring.js`) landed as
 **PR #41** → `main` **`b04f01e`**. PR 7 (household-taxes route group extracted into
-`apps/books/lib/routes/household.js`) landed as **PR #42** → `main` **`1b3e33b`**. #25 has **6/8 boxes** checked
-and stays OPEN for the two structural items (server split; schema migrations/roles/durable storage).
+`apps/books/lib/routes/household.js`) landed as **PR #42** → `main` **`1b3e33b`**. PR 8 (payroll route group
+extracted into `apps/books/lib/routes/payroll.js`) landed as **PR #43** → `main` **`2886521`**. #25 has **6/8
+boxes** checked and stays OPEN for the two structural items (server split; schema migrations/roles/durable storage).
 
 **What landed this session (behavior-preserving, covered by the existing smoke suite):**
-- **Continued the incremental `server.js` split.** Extracted the **payroll** route group — the 19 handlers
-  `GET/PUT /api/payroll/settings`, `GET/POST /api/payroll/employees`, `PUT/DELETE /api/payroll/employees/:id`,
-  `GET/POST /api/payroll/runs`, `GET/PUT/DELETE /api/payroll/runs/:id`,
-  `POST /api/payroll/runs/:id/import-timecards`, `POST /api/payroll/runs/:id/finalize`,
-  `GET /api/payroll/deposits`, `GET /api/payroll/nacha/tax`, `GET /api/payroll/runs/:id/nacha`,
-  `GET /api/payroll/filings`, `GET /api/payroll/liabilities`, `POST /api/payroll/liabilities/deposit` —
-  verbatim into **`apps/books/lib/routes/payroll.js`**, exported as `(route, deps) => {...}`. `server.js`
-  requires it **in place** (same spot the block sat, right before the household require), so route-registration
-  order is unchanged; the handlers close over an explicit `deps` object (`sendJSON, notFound, badRequest,
-  readBody, uid, round2, todayISO, save, commit, commitMany, audit, payroll, deposits, nacha, filings, timecards,
-  money`) instead of the monolith's module scope. `server.js` 1495 → 1081 lines.
-- **Nothing moved IN with the group** — unlike household/expenses/customers, all payroll domain logic already
-  lives in the shared `lib/payroll/*` modules (service/deposits/nacha/filings/timecards), so there was no
-  payroll-only helper defined in `server.js` module scope to move. The five `lib/payroll/*` requires
-  (`payroll`, `deposits`, `nacha`, `filings`, `timecards`) ARE used only by this group (confirmed by grep — the
-  only remaining references in `server.js` are the require lines + the require-block comment), but following the
-  household precedent (which threaded `tax1040`/`nj1040`/etc. rather than moving require lines), the `require`
-  lines stay at the top of `server.js` and the module objects are threaded through `deps`. Matches how expenses'
-  `receipts` require is threaded, not re-required.
-- **Mixed persistence preserved EXACTLY (do NOT "fix" the direction of any path).** This group is money-heavy but
-  mixed. NON-money paths call `save(db)`: settings PUT, employee CRUD, run create-draft/edit/import-timecards/
-  delete (draft run inputs + config — no cash moves). MONEY paths commit through the transactional outbox:
-  `POST /api/payroll/runs` (`payroll.run_created` via `commit`), `.../finalize` (posts net-pay expense then
-  `commitMany`s `payroll.run_finalized` + one `payroll.payment` per employee, deterministic idempotency key),
-  `POST /api/payroll/liabilities/deposit` (posts a tax-deposit expense then `commit`s `payroll.deposit_recorded`).
-  The read-only GETs (settings/employees/runs/deposits-calendar/filings/liabilities) and the two NACHA file
-  downloads (tax CCD+/TXP, PPD direct-deposit) neither save nor commit. The 252-check `smoke.test.js` suite is
-  **identical before/after** and still passes — the characterization safety net for this slice.
+- **Continued the incremental `server.js` split.** Extracted the **bank** feed route group — the 17 handlers
+  `GET /api/bank/status`, `PUT/DELETE /api/bank/config`, `POST /api/bank/link-token`, `POST /api/bank/exchange`,
+  `POST /api/bank/sync`, `DELETE /api/bank/connections/:id`, `POST /api/bank/import-csv`,
+  `GET/POST /api/bank/rules`, `DELETE /api/bank/rules/:id`, `POST /api/bank/apply-rules`,
+  `GET /api/bank/transactions`, and the review-queue `POST /api/bank/transactions/:id/{expense,match,exclude,
+  restore}` — verbatim into **`apps/books/lib/routes/bank.js`**, exported as `(route, deps) => {...}`. `server.js`
+  requires it **in place** (same spot the block sat, between the expenses and payroll requires), so
+  route-registration order is unchanged; the handlers close over an explicit `deps` object (`sendJSON, notFound,
+  badRequest, readBody, uid, round2, todayISO, save, commit, audit, money, plaid, parseBankCSV, decorateInvoice,
+  salestax`) instead of the monolith's module scope. `server.js` 1081 → 777 lines.
+- **Four bank-only helpers moved IN with the group** (grep-confirmed no other callers in `server.js`):
+  `publicConnection` (strips accessToken/cursor off a connection), `txnKey` (CSV dedup key), `syncConnection`
+  (Plaid cursor sync loop), `ruleFor` (matches an outflow to a categorization rule). The `plaid` and
+  `parseBankCSV` requires are used **only** by this group, but following the expenses/payroll precedent the
+  `require` lines stay at the top of `server.js` and the modules thread through `deps` (NOT re-required in the
+  module). `decorateInvoice` and `salestax` are shared across groups → threaded, not moved. (Note: `server.js`
+  line 197's `plaid` is a destructuring key on `db.settings`, not the module — don't be fooled by grep.)
+- **Mixed persistence preserved EXACTLY (do NOT "fix" the direction of any path).** The characterization here
+  corrects the prior handoff's loose phrasing: the ONLY two money-commit paths in the bank group are the
+  feed-import endpoints — `POST /api/bank/sync` and `POST /api/bank/import-csv`, each of which `commit`s a
+  `bank.transactions_imported` event (exact signed net via `money.sum`/`money.add`) through the transactional
+  outbox. **Every other mutation calls `save(db)` directly**, including the review-queue
+  `.../transactions/:id/{expense,match,exclude,restore}` paths (they record an already-settled bank event into
+  the local book — no new cash movement), plus config PUT/DELETE, exchange, connection delete, and rule CRUD /
+  apply-rules. `.../match` is the one that pushes an invoice payment carrying `salestax.taxSplitSnapshot(dMatch)`
+  (the 3rd of the three snapshot sites). The 252-check `smoke.test.js` suite is **identical before/after** and
+  still passes.
 
 **The extraction pattern (follow it for the next group):**
 1. Create `apps/books/lib/routes/<group>.js` exporting `module.exports = function (route, deps) { const {...} = deps; route(method, pattern, handler); ... }`.
@@ -102,22 +102,20 @@ and stays OPEN for the two structural items (server split; schema migrations/rol
 4. `npm run typecheck` + `npm test --workspace apps/books` must stay green with the **same 252 count**.
 
 **Next session → continue the split (own PRs, one cohesive group each), then the other structural item:**
-- **Next split slices.** Seven groups are now extracted (reports, expenses, customers, time, recurring,
-  household, payroll). Remaining route groups by handler count (see the `route(` map in `server.js`): bank ~17,
-  invoices ~7, plus auth/companies/settings and the audit/backup tail. Suggested next: **bank** (the biggest
-  remaining cohesive group). **Watch out for `invoices`:** it drags in the shared `createInvoice`
-  constructor (used by the recurring scheduler that runs at boot, plus the sales-import and already-extracted
-  time-invoice + recurring-POST routes — `createInvoice` is the constructor `generateRecurring`/time/sales-import
-  all thread), so it is NOT self-contained the way expenses/customers/time/recurring/household/payroll were —
-  give it a dedicated pass and thread `createInvoice` (leave it defined in server.js and pass it through `deps`,
-  as the time and recurring groups already do). Watch generally for handlers referencing module-level helpers you
-  haven't passed yet (`scheduleRecurring`, `secureAttr`, `PUBLIC_ROUTES`, the plaid/csv/receipts requires) —
-  thread them through `deps`. Note `decorateInvoice` and `generateRecurring` are shared across groups + the boot
-  scheduler — thread them, don't move them. **bank** reaches for `plaid`/`parseBankCSV` and is a mix of money
-  (`bank/transactions/:id/expense|match` commit) and non-money (`bank/config`, `bank/rules`, `bank/transactions/
-  :id/exclude|restore` save) paths — preserve each direction exactly. The bank group sits just ABOVE the payroll
-  require in `server.js` today (`/api/bank/*` handlers around lines 700–850), the `/api/bank/transactions/:id/
-  expense|match` money paths carry `salestax.taxSplitSnapshot` on the payment they push — thread `salestax`.
+- **Next split slices.** Eight groups are now extracted (reports, expenses, customers, time, recurring,
+  household, payroll, bank). Remaining route groups (see the `route(` map in `server.js`): **invoices ~7**, plus
+  auth/companies/settings and the audit/backup tail. Suggested next: **invoices** (the last big domain group).
+  **Watch out for `invoices`:** it drags in the shared `createInvoice` constructor (used by the recurring
+  scheduler that runs at boot, plus the sales-import and already-extracted time-invoice + recurring-POST routes —
+  `createInvoice` is the constructor `generateRecurring`/time/sales-import all thread), so it is NOT
+  self-contained the way the eight extracted groups were — give it a dedicated pass and thread `createInvoice`
+  (leave it defined in server.js and pass it through `deps`, as the time and recurring groups already do). Watch
+  generally for handlers referencing module-level helpers you haven't passed yet (`scheduleRecurring`,
+  `secureAttr`, `PUBLIC_ROUTES`, the plaid/csv/receipts requires) — thread them through `deps`. Note
+  `decorateInvoice` and `generateRecurring` are shared across groups + the boot scheduler — thread them, don't
+  move them. The invoices group carries two of the three `salestax.taxSplitSnapshot` sites (create/edit payment
+  push + sales-import) — thread `salestax`; it also references `validInvoice` (shared with the recurring group,
+  already threaded there — keep it in `server.js` and thread it).
 - **Schema migrations / roles / durable storage before any multi-user deploy** (checklist item). Books is a
   single-file JSON store today; design a migration/versioning story + role model. Gates multi-user.
 - **Migrate more domains into `@elias/rules`:** sales-tax rate + ST-50/51 calendar, LEDES units, the 1040
