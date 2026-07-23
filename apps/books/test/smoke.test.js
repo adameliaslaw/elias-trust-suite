@@ -145,6 +145,14 @@ async function main() {
   });
   const session = loginRes.headers.get('set-cookie').split(';')[0];
   check('login sets session cookie', loginRes.status === 200 && session.startsWith('qb_session='));
+  // L3: the session cookie is Secure when the request arrived over TLS, and
+  // omits it on plain-http localhost (or login would break in dev).
+  check('session cookie omits Secure on plain-http', !/;\s*Secure/i.test(loginRes.headers.get('set-cookie')));
+  const tlsLogin = await fetch(BASE + '/api/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-forwarded-proto': 'https' },
+    body: JSON.stringify({ password: 'secret123' })
+  });
+  check('session cookie is Secure behind TLS (x-forwarded-proto=https)', /;\s*Secure/i.test(tlsLogin.headers.get('set-cookie')));
   let authed = await fetch(BASE + '/api/audit?limit=30', { headers: { cookie: session } });
   const loginAudits = (await authed.json()).entries
     .filter(e => e.type === 'http.write' && e.payload.path === '/api/login')
@@ -854,6 +862,20 @@ async function main() {
   check('audit entries are hash-chained (seq + 64-hex hash), not the forgeable log',
     auditEntries.every(e => Number.isInteger(e.seq) && /^[0-9a-f]{64}$/.test(e.hash)));
   check('audit chain never records reads', httpWrites.every(e => e.payload.method !== 'GET'));
+
+  // M8: a tampered audit chain must not 400 read-only GETs. Previously
+  // dashboard/invoice reads called generateRecurring → audit.append →
+  // verify-on-open threw on a broken chain → the read 400'd. Reads no longer
+  // touch the chain at all.
+  const companyId = (await req('GET', '/api/companies')).data.find(c => c.active).id;
+  const chainFile = require('../lib/audit').chainFile(companyId);
+  const chainLines = fs.readFileSync(chainFile, 'utf8').trim().split('\n');
+  const forged = JSON.parse(chainLines[0]); forged.payload = { ...forged.payload, tampered: true };
+  chainLines[0] = JSON.stringify(forged);
+  fs.writeFileSync(chainFile, chainLines.join('\n') + '\n');
+  check('a tampered chain surfaces as a verification failure', (await req('GET', '/api/audit')).data.verified.ok === false);
+  check('a tampered chain does not 400 the dashboard (GETs are read-only)', (await req('GET', '/api/dashboard')).status === 200);
+  check('a tampered chain does not 400 the invoice list (GETs are read-only)', (await req('GET', '/api/invoices')).status === 200);
 
   // static
   const page = await fetch(BASE + '/');
