@@ -9,8 +9,9 @@
 > (#37, `298d948`): began the `server.js` split — sales-tax + reports route group extracted behind the
 > 252-check smoke suite. PR 3 MERGED (#38, `cdcd631`): expenses route group extracted (same pattern). PR 4 MERGED
 > (#39, `ca7219c`): customers route group extracted (4 handlers). PR 5 MERGED (#40, `635db72`): time route group
-> extracted (6 handlers). PR 6 MERGED (#41, `b04f01e`): recurring route group extracted (4 handlers). PR 7 open:
-> extract the household route group (8 handlers).**
+> extracted (6 handlers). PR 6 MERGED (#41, `b04f01e`): recurring route group extracted (4 handlers). PR 7 MERGED
+> (#42, `1b3e33b`): household route group extracted (8 handlers). PR 8 open: extract the payroll route group
+> (19 handlers).**
 > Phase 5 (#24) ✅ done + MERGED (PR #34); Phase 0 (#19) ✅ ratified
 > (D1=C, D2=B, D3=C split-by-domain, D4=B). Phase 5 = data + audit hardening; all 8 checklist
 > items landed with reproducing tests: fail-closed iolta verify against the recorded head + surfaced offline
@@ -120,7 +121,7 @@ The tests are valuable but largely do not cover these paths.
 | 3 — Reconciliation lifecycle + retention | #22 | ✅ Done (#14 closed) |
 | 4 — Redesign Matterproof billing | #23 | ✅ Done (#17, #18 fixed) |
 | 5 — Data + audit hardening | #24 | ✅ Done — PR #34 merged (8/8; Clio retry dedup + books transactional outbox) |
-| 6 — Books role + `packages/rules` | #25 | 🟨 **In progress** — PR 1 MERGED (#36): `@elias/rules` + payroll retrofit + tax fixes (6/8). PR 2 MERGED (#37): `server.js` split begun (sales-tax + reports group). PR 3 MERGED (#38): expenses group. PR 4 MERGED (#39): customers group. PR 5 MERGED (#40): time group. PR 6 MERGED (#41): recurring group. PR 7 open: household group extracted |
+| 6 — Books role + `packages/rules` | #25 | 🟨 **In progress** — PR 1 MERGED (#36): `@elias/rules` + payroll retrofit + tax fixes (6/8). PR 2 MERGED (#37): `server.js` split begun (sales-tax + reports group). PR 3 MERGED (#38): expenses group. PR 4 MERGED (#39): customers group. PR 5 MERGED (#40): time group. PR 6 MERGED (#41): recurring group. PR 7 MERGED (#42): household group. PR 8 open: payroll group extracted |
 | 7 — Suite integration + `packages/auth` | #26 | ⬜ Blocked on 2–6 (needs 6) |
 | 8 — Release engineering | #27 | ⬜ Parallelizable; finalize last |
 
