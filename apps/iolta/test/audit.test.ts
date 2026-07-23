@@ -4,7 +4,7 @@
 // concurrent writers (the multi-tab/multi-device case).
 import assert from 'node:assert/strict';
 import { AuditLog, InMemoryStorage, GENESIS_HASH } from '@elias/audit/core';
-import { buildNextEntry, verifyEntryDocs, casAppend } from '../src/audit-chain';
+import { buildNextEntry, verifyEntryDocs, verifyChainState, casAppend } from '../src/audit-chain';
 import type { ChainHead, HeadCas, SealedEntry } from '../src/audit-chain';
 
 let passed = 0;
@@ -132,6 +132,75 @@ async function main() {
       casAppend(alwaysConflict, 'trust.client_created', { clientId: 'c1', name: 'X', actor: 'a' }, { maxRetries: 3 }),
       /contention/,
     );
+  });
+
+  // --- #16: fail-closed verify against the recorded head + offline queue ---
+  const chain3 = (): SealedEntry[] => {
+    const e0 = buildNextEntry(null, 'trust.client_created', { clientId: 'c1', name: 'A', actor: 'a' }, '2026-02-01T00:00:00.000Z');
+    const e1 = buildNextEntry(e0, 'trust.transaction_added', {
+      transactionId: 't1', clientId: 'c1', amountCents: '5000', txType: 'receipt',
+      month: '2026-01', source: 'manual', actor: 'a',
+    }, '2026-02-01T00:00:01.000Z');
+    const e2 = buildNextEntry(e1, 'trust.transaction_added', {
+      transactionId: 't2', clientId: 'c1', amountCents: '2500', txType: 'disbursement',
+      month: '2026-01', source: 'manual', actor: 'a',
+    }, '2026-02-01T00:00:02.000Z');
+    return [e0, e1, e2];
+  };
+
+  await test('#16 verifyChainState: head matching the tail with an empty queue is ok', () => {
+    const docs = chain3();
+    const tail = docs[docs.length - 1];
+    const v = verifyChainState(docs, { seq: tail.seq, hash: tail.hash }, 0);
+    assert.deepEqual(v, { ok: true, entries: 3, pending: 0 });
+  });
+
+  await test('#16 verifyChainState: empty chain, no head, no queue is ok', () => {
+    assert.deepEqual(verifyChainState([], null, 0), { ok: true, entries: 0, pending: 0 });
+  });
+
+  await test('#16 verifyChainState: head ahead of the entries fails (dropped tail)', () => {
+    // The recorded head reached seq 2, but only the first two entries survive:
+    // re-hashing the two would say "ok" — the head witnesses the missing one.
+    const docs = chain3();
+    const realHead = { seq: docs[2].seq, hash: docs[2].hash };
+    const truncated = docs.slice(0, 2);
+    const v = verifyChainState(truncated, realHead, 0);
+    assert.equal(v.ok, false);
+    assert.equal((v as { atSeq: number }).atSeq, 1);
+    assert.match((v as { error: string }).error, /does not match the last entry/);
+  });
+
+  await test('#16 verifyChainState: entries with no recorded head fail (head lost)', () => {
+    const v = verifyChainState(chain3(), null, 0);
+    assert.equal(v.ok, false);
+    assert.match((v as { error: string }).error, /head is missing/);
+  });
+
+  await test('#16 verifyChainState: head present but all entries gone fails', () => {
+    const v = verifyChainState([], { seq: 4, hash: 'abc' }, 0);
+    assert.equal(v.ok, false);
+    assert.equal((v as { atSeq: number }).atSeq, 4);
+    assert.match((v as { error: string }).error, /no entries exist/);
+  });
+
+  await test('#16 verifyChainState: a non-empty offline queue is surfaced as a failure', () => {
+    const docs = chain3();
+    const tail = docs[docs.length - 1];
+    const v = verifyChainState(docs, { seq: tail.seq, hash: tail.hash }, 2);
+    assert.equal(v.ok, false);
+    assert.equal((v as { pending: number }).pending, 2);
+    assert.match((v as { error: string }).error, /unflushed queue/);
+  });
+
+  await test('#16 verifyChainState: tampering still beats a matching head + empty queue', () => {
+    const docs = chain3();
+    // Alter a sealed payload without resealing — hash no longer matches.
+    (docs[1] as unknown as { payload: { amountCents: string } }).payload.amountCents = '999999';
+    const tail = docs[docs.length - 1];
+    const v = verifyChainState(docs, { seq: tail.seq, hash: tail.hash }, 0);
+    assert.equal(v.ok, false);
+    assert.equal((v as { atSeq: number }).atSeq, 1);
   });
 
   console.log(`\naudit.test.ts: ${passed} passed`);
