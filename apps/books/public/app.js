@@ -2137,19 +2137,38 @@ async function render1099Card() {
   });
 }
 
+function auditActionCell(e) {
+  const p = e.payload || {};
+  // http.write carries the request line; every other event is a semantic
+  // money/compliance mutation — show its type and the fields that matter.
+  if (e.type === 'http.write') {
+    return `<span class="strong">${esc(p.method || '')}</span> ${esc(p.path || '')}`;
+  }
+  const detail = Object.entries(p)
+    .filter(([k]) => k !== 'actor')
+    .map(([k, v]) => `${esc(k)}=${esc(String(v))}`)
+    .join(', ');
+  return `<span class="strong">${esc(e.type)}</span>${detail ? ` <span class="muted">${detail}</span>` : ''}`;
+}
+
 async function renderAuditCard() {
   const card = $('#audit-card');
   if (!card) return;
-  const log = await api('GET', '/api/audit?limit=30');
+  const { verified, entries } = await api('GET', '/api/audit?limit=30');
+  const badge = verified.ok
+    ? `<span class="badge paid">tamper-evident · ${verified.entries} entries verified</span>`
+    : `<span class="badge overdue">INTEGRITY FAILURE${verified.atSeq != null ? ` (seq ${verified.atSeq})` : ''}</span>`;
   card.innerHTML = `
-    <div class="card-pad" style="padding-bottom:0"><h2>Activity log
-      <span class="muted" style="font-weight:400">(last ${log.length} changes on this company)</span></h2></div>
-    ${log.length ? `<table>
-      <thead><tr><th>When</th><th>Action</th><th>Status</th></tr></thead>
-      <tbody>${log.map(e => `<tr>
-        <td class="muted">${new Date(e.ts).toLocaleString()}</td>
-        <td><span class="strong">${esc(e.method)}</span> ${esc(e.path)}</td>
-        <td>${e.status < 400 ? '<span class="badge paid">ok</span>' : `<span class="badge overdue">${e.status}</span>`}</td>
+    <div class="card-pad" style="padding-bottom:0"><h2>Audit chain ${badge}
+      <span class="muted" style="font-weight:400">(hash-chained record, newest first)</span></h2>
+      ${verified.ok ? '' : `<p class="bank-help" style="color:var(--danger,#b00)">${esc(verified.error || 'chain verification failed')}</p>`}</div>
+    ${entries.length ? `<table>
+      <thead><tr><th>#</th><th>When</th><th>Event</th><th>Hash</th></tr></thead>
+      <tbody>${entries.map(e => `<tr>
+        <td class="muted">${e.seq}</td>
+        <td class="muted">${new Date(e.timestamp).toLocaleString()}</td>
+        <td>${auditActionCell(e)}</td>
+        <td class="muted" title="${esc(e.hash || '')}" style="font-family:monospace">${esc(String(e.hash || '').slice(0, 10))}</td>
       </tr>`).join('')}</tbody>
     </table>` : '<div class="empty">No changes recorded yet.</div>'}`;
 }

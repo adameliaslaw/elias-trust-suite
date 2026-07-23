@@ -146,8 +146,10 @@ async function main() {
   const session = loginRes.headers.get('set-cookie').split(';')[0];
   check('login sets session cookie', loginRes.status === 200 && session.startsWith('qb_session='));
   let authed = await fetch(BASE + '/api/audit?limit=30', { headers: { cookie: session } });
-  const loginAudits = (await authed.json()).filter(e => e.path === '/api/login');
-  check('login attempts land in the audit log',
+  const loginAudits = (await authed.json()).entries
+    .filter(e => e.type === 'http.write' && e.payload.path === '/api/login')
+    .map(e => e.payload);
+  check('login attempts land in the audit chain',
     loginAudits.some(e => e.status === 401) && loginAudits.some(e => e.status === 429) && loginAudits.some(e => e.status === 200));
   authed = await fetch(BASE + '/api/customers', { headers: { cookie: session } });
   check('session grants API access', authed.status === 200);
@@ -840,9 +842,18 @@ async function main() {
   check('untracked vendor no longer flagged', r.data.vendors.find(v => v.name === 'Cleaning Crew LLC').needs1099 === false);
 
   r = await req('GET', '/api/audit');
-  check('audit log records mutations, newest first', r.data.length > 0 &&
-    r.data[0].method === 'POST' && r.data[0].path === '/api/vendors/1099' && r.data[0].status === 200);
-  check('audit log never records reads', r.data.every(e => e.method !== 'GET'));
+  // H1: /api/audit surfaces the TAMPER-EVIDENT chain, not db.auditLog.
+  check('audit endpoint returns the verified chain envelope',
+    r.data && r.data.verified && Array.isArray(r.data.entries));
+  check('audit chain verifies as tamper-evident', r.data.verified.ok === true && r.data.verified.entries > 0);
+  const auditEntries = r.data.entries;
+  const httpWrites = auditEntries.filter(e => e.type === 'http.write');
+  check('audit chain records mutations, newest first (as chained entries)',
+    auditEntries.length > 0 && httpWrites[0].payload.method === 'POST' &&
+    httpWrites[0].payload.path === '/api/vendors/1099' && httpWrites[0].payload.status === 200);
+  check('audit entries are hash-chained (seq + 64-hex hash), not the forgeable log',
+    auditEntries.every(e => Number.isInteger(e.seq) && /^[0-9a-f]{64}$/.test(e.hash)));
+  check('audit chain never records reads', httpWrites.every(e => e.payload.method !== 'GET'));
 
   // static
   const page = await fetch(BASE + '/');

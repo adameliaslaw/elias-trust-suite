@@ -1983,10 +1983,21 @@ route('GET', '/api/reports/aging', (req, res, db) => {
   sendJSON(res, 200, { buckets, summary, total: money.sum(...Object.values(summary)) });
 });
 
-// -- audit log (written centrally in the dispatcher for every mutation) --
-route('GET', '/api/audit', (req, res, db, params, query) => {
+// -- audit log --
+// Surfaces the TAMPER-EVIDENT chain (the hash-chained file outside the mutable
+// company-<id>.json), not db.auditLog — the forgeable copy that lives inside
+// the very file it audits. Entries carry seq/hash and ship with the chain's
+// verification result so the UI shows the record that actually resists forgery.
+route('GET', '/api/audit', async (req, res, db, params, query) => {
   const limit = Math.min(Number(query.get('limit')) || 100, 500);
-  sendJSON(res, 200, [...db.auditLog].reverse().slice(0, limit));
+  let verified;
+  try {
+    verified = await audit.verify(req.companyId);
+  } catch (e) {
+    verified = { ok: false, entries: 0, error: e.message, atSeq: e.atSeq ?? null };
+  }
+  const entries = await audit.entries(req.companyId, limit);
+  sendJSON(res, 200, { verified, entries });
 });
 // Integrity status of the tamper-evident chain: full re-verification on
 // every call. { ok: true, entries } — or ok:false naming the first bad seq.

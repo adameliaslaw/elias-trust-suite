@@ -52,6 +52,19 @@ async function verify(companyId) {
   return log.verify();
 }
 
+// The tamper-evident chain entries themselves, newest-first, capped at `limit`.
+// This is the record the audit UI must display — the hash-chained file OUTSIDE
+// the mutable company-<id>.json — not db.auditLog (a plain, forgeable array
+// living inside the very file it purports to audit). verifyOnOpen:false so a
+// tampered chain still renders (the caller pairs this with verify() to show the
+// integrity status); the entries carry seq/hash so the break is visible.
+async function entries(companyId, limit = 100) {
+  const log = await AuditLog.open(new FsJsonlStorage(chainFile(companyId)), { verifyOnOpen: false });
+  const all = log.entries();
+  const capped = limit > 0 ? all.slice(-limit) : all;
+  return [...capped].reverse();
+}
+
 // Exact integer cents as a decimal string — the audit money contract.
 // Never a float: all conversion goes through the @elias/money bridge.
 function centsStr(dollarAmount) {
@@ -75,4 +88,4 @@ function _reset() {
   logs.clear();
 }
 
-module.exports = { append, verify, centsStr, actor, chainFile, _reset };
+module.exports = { append, verify, entries, centsStr, actor, chainFile, _reset };
