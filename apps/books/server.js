@@ -480,39 +480,19 @@ route('POST', '/api/sales/import-csv', async (req, res, db) => {
 });
 
 // -- recurring invoices --
-route('GET', '/api/recurring', (req, res, db) => {
-  const list = db.recurringInvoices.map(tpl => {
-    const c = db.customers.find(x => x.id === tpl.customerId);
-    return { ...tpl, customerName: c ? (c.company || c.name) : '(deleted)' };
-  });
-  sendJSON(res, 200, list);
-});
-route('POST', '/api/recurring', async (req, res, db) => {
-  const b = await readBody(req);
-  const tpl = recurring.sanitizeTemplate(b);
-  const err = validInvoice({ customerId: tpl.customerId, date: tpl.nextDate, items: tpl.items }, db);
-  if (err) return badRequest(res, err);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(tpl.nextDate)) return badRequest(res, 'A first bill date is required');
-  db.recurringInvoices.push(tpl);
-  await generateRecurring(db, req.companyId, audit.actor(req));   // a first date of today (or earlier) bills immediately
-  save(db);
-  sendJSON(res, 201, tpl);
-});
-route('PUT', '/api/recurring/:id', async (req, res, db, params) => {
-  const idx = db.recurringInvoices.findIndex(t => t.id === params.id);
-  if (idx === -1) return notFound(res);
-  const b = await readBody(req);
-  const tpl = recurring.sanitizeTemplate(b, db.recurringInvoices[idx]);
-  db.recurringInvoices[idx] = tpl;
-  save(db);
-  sendJSON(res, 200, tpl);
-});
-route('DELETE', '/api/recurring/:id', (req, res, db, params) => {
-  const idx = db.recurringInvoices.findIndex(t => t.id === params.id);
-  if (idx === -1) return notFound(res);
-  db.recurringInvoices.splice(idx, 1);
-  save(db);
-  sendJSON(res, 200, { ok: true });
+// Extracted into lib/routes/recurring.js as the fifth slice of the incremental
+// server split (Phase 6 / #25). Registered here, in place, so route order is
+// unchanged; the handlers close over the deps passed below instead of this
+// file's module scope. Persistence preserved exactly: the template CRUD is
+// non-money (GET reads; PUT/DELETE save(db)); POST is mixed — it calls
+// generateRecurring (which commitManys any due invoices, source: 'recurring')
+// then save(db) for the template. validInvoice (shared with invoices) and
+// generateRecurring (shared with the boot scheduler — it closes over
+// createInvoice/commitMany/decorateInvoice) stay defined in server.js and are
+// threaded through deps, NOT moved.
+require('./lib/routes/recurring')(route, {
+  sendJSON, notFound, badRequest, readBody,
+  save, recurring, validInvoice, generateRecurring, audit
 });
 
 // -- billable time --
