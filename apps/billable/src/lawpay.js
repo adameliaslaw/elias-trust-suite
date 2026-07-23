@@ -111,6 +111,17 @@ function markRequested(request) {
   for (const e of request.included) {
     store.writeOverride(e.id, { lawpayRef: request.reference });
   }
+  // Idempotent on the deterministic reference (a content hash of the entry
+  // ids — its own idempotency key). A retry after a partial failure (the link
+  // was issued but the first attempt errored before returning) must NOT append
+  // a second payment_request for the same reference: listRequests would then
+  // show it twice and outstanding() would double-count the A/R. If it is
+  // already on the ledger, the entry stamps above are re-asserted (a no-op) and
+  // we return without a duplicate event.
+  const already = store.readEvents().some(
+    (ev) => ev.type === 'payment_request' && ev.reference === request.reference
+  );
+  if (already) return { reference: request.reference, duplicate: true };
   store.appendEvent({
     ts: new Date().toISOString(),
     type: 'payment_request',
@@ -123,6 +134,7 @@ function markRequested(request) {
   audit.appendSemantic(store.auditPath(), store.ledgerPath(), 'lawpay.request_created', {
     reference: request.reference, amountCents: String(request.amountCents), actor: 'local'
   });
+  return { reference: request.reference, duplicate: false };
 }
 
 // Accounts receivable for payment links: every generated request and every
