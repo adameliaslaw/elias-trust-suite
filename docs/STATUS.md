@@ -4,7 +4,8 @@
 > [HOMEWORK.md](HOMEWORK.md) for exactly where to start, then the epic issue for the phase.
 > Canonical plan: [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) · Findings narrative:
 > [EVALUATION.md](EVALUATION.md) · Backlog: GitHub Issues **#11–#27**.
-> Last updated: 2026-07-23 — **Phase 5 (#24) ✅ done (PR open): data + audit hardening.** All 8 checklist
+> Last updated: 2026-07-23 — **Phase 5 (#24) ✅ done + MERGED (PR #34); Phase 0 (#19) ✅ ratified by owner
+> (D1=C, D2=B, D3=C split-by-domain, D4=B) → Phase 6 (#25) now unblocked.** Phase 5 = data + audit hardening; all 8 checklist
 > items landed with reproducing tests: fail-closed iolta verify against the recorded head + surfaced offline
 > queue (#16); billable ledger reads the full last line so a >8 KB line no longer self-corrupts the chain (H2);
 > books `/api/audit` now serves the tamper-evident chain, not the forgeable `db.auditLog` (H1); books secrets
@@ -106,14 +107,14 @@ The tests are valuable but largely do not cover these paths.
 
 | Phase | Epic | Status |
 |---|---|---|
-| 0 — Define the product | #19 | ⬜ Not started (owner decisions; rewritten as a decision memo) |
+| 0 — Define the product | #19 | ✅ Done — decision memo ratified by owner (D1=C, D2=B, D3=C, D4=B) 2026-07-23 |
 | 1 — Contain risk + regression tests | #20 | ✅ Done — CI deterministic |
-| 2 — Rebuild IOLTA accounting model | #21 | ✅ Done — PR open (#11, #15 closed) |
-| 3 — Reconciliation lifecycle + retention | #22 | ✅ Done — PR open (#14 closed) |
-| 4 — Redesign Matterproof billing | #23 | ✅ Done — PR open (#17, #18 fixed) |
-| 5 — Data + audit hardening | #24 | ✅ Done — PR open (8/8; Clio retry dedup + books transactional outbox) |
-| 6 — Books role + `packages/rules` | #25 | ⬜ Blocked on 0 |
-| 7 — Suite integration + `packages/auth` | #26 | ⬜ Blocked on 2–6 |
+| 2 — Rebuild IOLTA accounting model | #21 | ✅ Done (#11, #15 closed) |
+| 3 — Reconciliation lifecycle + retention | #22 | ✅ Done (#14 closed) |
+| 4 — Redesign Matterproof billing | #23 | ✅ Done (#17, #18 fixed) |
+| 5 — Data + audit hardening | #24 | ✅ Done — PR #34 merged (8/8; Clio retry dedup + books transactional outbox) |
+| 6 — Books role + `packages/rules` | #25 | ⬜ **Unblocked** (Phase 0 ratified) — next engineering phase |
+| 7 — Suite integration + `packages/auth` | #26 | ⬜ Blocked on 2–6 (needs 6) |
 | 8 — Release engineering | #27 | ⬜ Parallelizable; finalize last |
 
 ## Done (real, keep)
@@ -126,10 +127,11 @@ The tests are valuable but largely do not cover these paths.
 
 ## Blocked on owner
 
-- Product-definition decisions (#19) gate Phases 6, 7. **Decision 3 (system of record) is still
-  unratified**; Phase 2 proceeded on the decision-safe structure (single-firm/multi-account now,
-  modeled multi-tenant per Decision 1's recommended default). Ratifying 3 later needs no schema change;
-  overriding to "suite is system of record for invoices/payments" would add thin invoice/payment objects.
+- ✅ **RESOLVED — Product-definition decisions (#19) ratified 2026-07-23.** D1=C (internal-first,
+  multi-tenant-capable), D2=B (hosting as-is), **D3=C (split by domain — suite owns trust/time/matters,
+  integrates with a real GL for invoices/AR)**, D4=B (Payroll/Bills migrations paused). Recorded in
+  CONSOLIDATION_PLAN.md (Product decisions). Phase 2's schema needed no change (already built on D3=C).
+  **Phase 6 (#25) is now unblocked;** Phase 7 (#26) still needs 6.
 - iolta `firebase deploy --only firestore:rules` (rules still undeployed). (#27)
 - Payroll: set `PAYROLL_ENCRYPTION_KEY`. plaid-bill-tracker: rotate Plaid creds + purge git history.
   Both migrations **paused** pending #19.

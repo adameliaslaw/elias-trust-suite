@@ -35,6 +35,26 @@ reconciliation and historical reports. The defensible positions are:
    N.J.S.A./N.J.A.C./IRS source and parameterized by effective date, so historical and amended
    periods compute correctly (`packages/rules`, Phase 6). This is the estate suite's proven moat.
 
+## Product decisions (Phase 0 · #19 · ratified 2026-07-23 by owner)
+
+The Phase 0 decision memo (#19) is **ratified**. These are settled; they shape the data model and gate
+the downstream phases:
+
+- **D1 — Audience: C.** Build for internal use first, but keep every structure **multi-tenant-capable** — a
+  single firm in practice today, no architectural doors closed to SaaS later.
+- **D2 — Hosting: B (as-is).** Firebase where iolta already is; local-only where billable already is. Full
+  deploy / "clone and run" config stays scoped to Phase 8 (#27).
+- **D3 — System of record: C (split by domain).** The suite owns **trust accounting, time capture, and
+  matters**; it **integrates** with a real double-entry accounting system (QuickBooks/Xero/etc.) for
+  invoices/AR/GL rather than reimplementing a general ledger. Trust (IOLTA) gets the bespoke NJ Rule 1:21-6
+  handling it needs; ordinary business bookkeeping does not. Phase 2 was already built on this shape, so
+  ratification requires **no schema change** — invoice/payment objects stay thin and integration-oriented;
+  trust/matter/time streams stay first-class.
+- **D4 — Payroll + plaid-bill-tracker migrations: B (paused).** Keep paused until the Books↔Matterproof
+  timekeeping overlap (#25 / Phase 6) is resolved.
+
+**Effect:** Phase 0 is complete; **Phase 6 (#25) is now unblocked.** Phase 7 (#26) remains gated on 2–6.
+
 ## Phased plan (each phase = one fresh session; see the linked epic)
 
 | Phase | Epic | Objective | Depends on |

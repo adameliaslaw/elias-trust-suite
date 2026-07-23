@@ -83,11 +83,24 @@ outbox 4, billable 56, iolta 18 + 13, audit 16, money 22); `npm run typecheck` c
 by this session; #16/#17/#18 (P4/5), #14 (P3), #11/#15 (P2), #12/#13/#20 (P1) closed. #19 unratified (gates
 Phases 6–7 only).
 
-**Next session → Phase 8 (epic #27, release engineering — parallelizable, the next unblocked work).** Phases
-6 (#25) and 7 (#26) remain BLOCKED on the unratified product decisions in #19 (Decision 3, system of record —
-no sign-off comment yet). Phase 8 items include: iolta `firebase deploy --only firestore:rules` (rules still
-undeployed), iolta's `xlsx`-from-CDN-tarball fragility, deploy config (PORT/env), and general release
-hardening — see #27. All money through `@elias/money`, all compliance events through `@elias/audit`.
+**UPDATE (2026-07-23, same session): Phase 5 PR #34 MERGED, and Phase 0 (#19) RATIFIED by owner** —
+D1=C (internal-first, multi-tenant-capable), D2=B (hosting as-is), **D3=C (split by domain: suite owns
+trust/time/matters, integrates with a real general ledger for invoices/AR — NOT the firm's GL itself)**,
+D4=B (Payroll/Bills migrations paused). Recorded in CONSOLIDATION_PLAN.md (Product decisions) + STATUS.md;
+#19 closed. Phase 2's schema needed no change (already built on D3=C).
+
+**Next session → two unblocked options; pick per owner priority:**
+- **Phase 6 (#25) — Books role + `packages/rules`** — now UNBLOCKED (Phase 0 done). The versioned, cited
+  rule engine (every tax/compliance constant → its N.J.S.A./N.J.A.C./IRS source, parameterized by effective
+  date) is the estate suite's proven moat, and it resolves the Books↔Matterproof timekeeping overlap. Under
+  D3=C, Books stays the internal financial OS but is NOT positioned as the firm's authoritative general
+  ledger — trust/time/matters are first-class; invoice/payment objects stay thin + integration-oriented.
+- **Phase 8 (#27) — release engineering** — parallelizable; the app-level slice is safe now (iolta
+  `firebase deploy --only firestore:rules`; iolta's `xlsx`-from-CDN-tarball fragility; deploy/runtime config
+  PORT/env). **Caveat:** #27 is tagged "finalize last" — do the deploy-unblocking infra, but NOT the final
+  *integrated-suite* release cut, which should wait until Phase 7 lands.
+
+Phase 7 (#26) still needs 6. All money through `@elias/money`, all compliance events through `@elias/audit`.
 
 **Gotchas (carried forward + new):**
 - **NEW — books transactional outbox:** money handlers now call `store.commit(db, companyId, type, payload)`
