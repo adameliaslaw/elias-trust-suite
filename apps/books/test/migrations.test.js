@@ -61,7 +61,10 @@ async function main() {
   const current = { schemaVersion: migrations.COMPANY_SCHEMA_VERSION, expenseCategories: ['Payroll', 'Payroll Taxes'], outbox: [] };
   check('runner is a no-op on an already-current object', migrations.migrateCompany(current, 'c2') === false);
 
-  // ---- on-disk round trip via the store ----
+  // ---- on-disk round trip via the store (JSON -> SQLite import) ----
+  // The document migration runner is engine-agnostic, but the durable store is
+  // SQLite now: a legacy JSON-file store is IMPORTED into books.db, and the doc
+  // runner upgrades each doc during that import (then the file is renamed aside).
   const id = 'legacyco';
   // Hand-write a legacy household file (no schemaVersion, no principals) and a
   // legacy company file (no schemaVersion, missing later collections).
@@ -75,23 +78,28 @@ async function main() {
     }));
 
   const store = require('../lib/store');
+  const sqlite = require('../lib/sqlite');
   const db = store.load(id);
-  check('store.load upgrades a legacy company file in memory',
-    db.schemaVersion === migrations.COMPANY_SCHEMA_VERSION && Array.isArray(db.timeEntries) && Array.isArray(db.outbox));
+  check('store.load surfaces the upgraded (imported) company doc in memory',
+    db.schemaVersion === migrations.COMPANY_SCHEMA_VERSION && Array.isArray(db.timeEntries));
   check('store.load does not drop legacy customer data',
     db.customers.length === 1 && db.customers[0].name === 'Persisted Customer');
-  const coDisk = JSON.parse(fs.readFileSync(path.join(DATA, `company-${id}.json`), 'utf8'));
-  check('store.load writes the upgraded company file back to disk',
-    coDisk.schemaVersion === migrations.COMPANY_SCHEMA_VERSION && Array.isArray(coDisk.outbox) && coDisk.customers[0].name === 'Persisted Customer');
-  check('upgraded company file is written 0600', mode(`company-${id}.json`) === 0o600);
+  const coRow = JSON.parse(sqlite.connect().prepare('SELECT doc FROM company WHERE id=?').get(id).doc);
+  check('the imported company row is stored at the current schema version, losslessly',
+    coRow.schemaVersion === migrations.COMPANY_SCHEMA_VERSION && coRow.customers[0].name === 'Persisted Customer');
+  check('books.db is written 0600', mode('books.db') === 0o600);
+  check('the legacy company file is renamed aside after import',
+    fs.existsSync(path.join(DATA, `company-${id}.json.migrated`)) && !fs.existsSync(path.join(DATA, `company-${id}.json`)));
 
   const { loadGlobal } = require('../lib/global');
   const gl = loadGlobal();
-  check('loadGlobal upgrades global.json to the current version',
+  check('loadGlobal surfaces the household doc upgraded to the current version',
     gl.schemaVersion === migrations.GLOBAL_SCHEMA_VERSION && Array.isArray(gl.principals));
-  const glDisk = JSON.parse(fs.readFileSync(path.join(DATA, 'global.json'), 'utf8'));
-  check('global.json is written back at the new version with principals seeded',
-    glDisk.schemaVersion === migrations.GLOBAL_SCHEMA_VERSION && Array.isArray(glDisk.principals));
+  const glRow = JSON.parse(sqlite.connect().prepare('SELECT doc FROM global WHERE id=0').get().doc);
+  check('the global row is stored at the new version with principals seeded',
+    glRow.schemaVersion === migrations.GLOBAL_SCHEMA_VERSION && Array.isArray(glRow.principals));
+  check('the legacy household file is renamed aside after import',
+    fs.existsSync(path.join(DATA, 'global.json.migrated')) && !fs.existsSync(path.join(DATA, 'global.json')));
 
   console.log(`\nAll ${passed} migration checks passed.`);
 }

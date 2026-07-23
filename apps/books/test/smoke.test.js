@@ -812,10 +812,8 @@ async function main() {
     receiptRes.headers.get('content-type') === 'image/png' &&
     (await receiptRes.arrayBuffer()).byteLength === r.data.receipt.size);
   const receiptsDir = path.join(process.env.QUICKBUCKS_DATA_DIR, 'receipts');
-  check('receipt bytes live on disk, not in the JSON', fs.readdirSync(receiptsDir).length === 1 &&
-    fs.readdirSync(process.env.QUICKBUCKS_DATA_DIR)
-      .filter(f => f.endsWith('.json'))
-      .every(f => !fs.readFileSync(path.join(process.env.QUICKBUCKS_DATA_DIR, f), 'utf8').includes('iVBORw0KGgo')));
+  check('receipt bytes live on disk, not in the store', fs.readdirSync(receiptsDir).length === 1 &&
+    !fs.readFileSync(path.join(process.env.QUICKBUCKS_DATA_DIR, 'books.db'), 'latin1').includes('iVBORw0KGgo'));
   r = await req('POST', `/api/expenses/${receiptExp.id}/receipt`, { name: 'receipt.pdf', type: 'application/pdf', dataBase64: Buffer.from('%PDF-1.4 test').toString('base64') });
   check('re-upload replaces the receipt', r.status === 200 && r.data.receipt.mime === 'application/pdf' &&
     fs.readdirSync(receiptsDir).length === 1);
@@ -836,9 +834,8 @@ async function main() {
     backupRes.headers.get('content-type') === 'application/x-tar' &&
     (backupRes.headers.get('content-disposition') || '').includes('quickbucks-backup-'));
   const tarNames = backupLib.entryNames(Buffer.from(await backupRes.arrayBuffer()));
-  check('backup contains the books, household data, and receipts',
-    tarNames.includes('quickbucks-data/global.json') &&
-    tarNames.filter(n => /company-.*\.json$/.test(n)).length === 2 &&
+  check('backup contains the books+household store (books.db) and receipts',
+    tarNames.includes('quickbucks-data/books.db') &&
     tarNames.some(n => n.startsWith('quickbucks-data/receipts/')));
   r = await fetch(BASE + '/manifest.json');
   check('PWA manifest served', r.status === 200 && (await r.json()).display === 'standalone');

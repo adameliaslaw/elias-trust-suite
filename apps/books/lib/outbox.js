@@ -1,78 +1,92 @@
 'use strict';
-// Transactional outbox — makes a money mutation atomic with its audit append.
+// Transactional outbox on SQLite — makes a money mutation atomic with its audit
+// append (#24, re-derived for SQLite in Phase 6 / #25).
 //
-// The problem (#24): a write handler does two separate disk writes —
-//   1. save(db)                 -> company-<id>.json  (the money mutation)
-//   2. audit.append(type, ...)  -> audit/company-<id>.jsonl  (the record of it)
-// A crash BETWEEN them leaves the two out of step: a persisted mutation with no
-// audit event (a silent gap — worse than tampering, because verify() still
-// passes), or an audit event for a mutation that never persisted.
+// The problem is unchanged from the JSON era: a write handler makes two durable
+// writes — the money mutation (company doc) and the record of it (the
+// tamper-evident audit chain). A crash BETWEEN them leaves the two out of step:
+// a persisted mutation with no audit event (a silent gap — worse than tampering,
+// because verify() still passes), or an audit event for a mutation that never
+// persisted.
 //
-// The fix rides the owed audit event INSIDE the company JSON so it commits in
-// the SAME atomic write as the mutation. save() is atomic (tmp file + rename),
-// so after a save either BOTH the mutation and the owed event are on disk, or
-// NEITHER is — never one without the other. A relay then delivers the owed
-// event to the tamper-evident chain and clears it:
+// The JSON store solved this by riding the owed event INSIDE the company file so
+// a single tmp-file+rename committed both. SQLite gives us the real thing: the
+// company doc UPDATE and the owed-event INSERTs run in ONE transaction, so after
+// COMMIT either BOTH are on disk or NEITHER is. The outbox is its own TABLE
+// (lib/sqlite.js), which is where transactional exactly-once actually lives.
 //
-//   enqueue(db, event)  — stage the owed audit event in db.outbox (memory)
-//   save(db)            — ATOMIC: mutation + owed event commit together
-//   flush(db, id, save) — deliver each owed event to the chain, then clear+save
+//   stage(conn, id, docText, events) — ONE atomic txn: doc + owed events commit
+//                                      together (or roll back together).
+//   flush(conn, id)                  — deliver each owed event to the chain
+//                                      (idempotent on msg_id), deleting each row
+//                                      as it lands → delivered exactly once.
+//   commit(conn, id, docText, events)— stage then flush (the normal write path).
+//   recoverAll(companiesFn)          — on boot, flush any rows a crash stranded.
 //
-// Recovery (recoverAll, on boot) reruns flush for any db whose outbox survived a
-// crash, so an interrupted delivery always completes. Delivery is idempotent on
-// the message id (audit.appendIdempotent), so a crash between "appended" and
-// "cleared" never double-records on the next flush.
+// Exactly-once across crashes: appendIdempotent skips a msg_id already on the
+// chain, so a crash AFTER the append but BEFORE the row-delete redelivers
+// harmlessly on the next flush (append is a no-op, the delete then completes).
 const crypto = require('crypto');
 const audit = require('./audit');
+const sqlite = require('./sqlite');
 
-// Stage one owed audit event in the db. The message id is the idempotency key
-// the chain dedups on, so a replay after a partial crash cannot double-append.
-function enqueue(db, type, payload) {
-  if (!Array.isArray(db.outbox)) db.outbox = [];
-  const id = crypto.randomUUID();
-  db.outbox.push({ id, type, payload });
-  return id;
+// Pending owed events for a company, oldest first (rowid is insert order).
+function pending(conn, companyId) {
+  return conn
+    .prepare('SELECT msg_id, type, payload FROM outbox WHERE company_id = ? ORDER BY rowid')
+    .all(companyId);
 }
 
-// Deliver every pending owed event to the tamper-evident chain, then clear the
-// outbox and persist that (so a message is delivered exactly once across
-// crashes). Idempotent: appendIdempotent skips a message already on the chain,
-// so a crash after the append but before the clear-save replays harmlessly.
-async function flush(db, companyId, save) {
-  if (!Array.isArray(db.outbox) || db.outbox.length === 0) return 0;
-  // Snapshot the ids being delivered; new enqueues during an await must not be
-  // dropped by the clear below.
-  const delivering = db.outbox.slice();
-  for (const msg of delivering) {
-    await audit.appendIdempotent(companyId, msg.type, msg.payload, msg.id);
-  }
-  const deliveredIds = new Set(delivering.map((m) => m.id));
-  db.outbox = db.outbox.filter((m) => !deliveredIds.has(m.id));
-  save(db);
-  return delivering.length;
-}
-
-// The whole transactional unit: stage the owed event(s), persist them together
-// with the caller's already-applied mutation, then deliver. `events` is a
-// single {type, payload} or an array of them.
-async function commit(db, companyId, save, events) {
+// ONE atomic transaction: persist the caller's already-applied doc mutation AND
+// the owed audit event(s) together. On any failure the whole unit rolls back —
+// neither the mutation nor the events persist. Returns the staged message ids.
+function stage(conn, companyId, docText, events) {
   const list = Array.isArray(events) ? events : [events];
-  for (const e of list) enqueue(db, e.type, e.payload);
-  save(db);                 // atomic: the mutation + the owed audit events
-  return flush(db, companyId, save);
+  const msgs = list.map((e) => ({ id: crypto.randomUUID(), type: e.type, payload: e.payload }));
+  const putDoc = conn.prepare('INSERT OR REPLACE INTO company(id, doc) VALUES(?, ?)');
+  const putMsg = conn.prepare('INSERT INTO outbox(msg_id, company_id, type, payload) VALUES(?, ?, ?, ?)');
+  conn.exec('BEGIN IMMEDIATE');
+  try {
+    putDoc.run(companyId, docText);
+    for (const m of msgs) putMsg.run(m.id, companyId, m.type, JSON.stringify(m.payload ?? null));
+    conn.exec('COMMIT');
+  } catch (e) {
+    try { conn.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+    throw e;
+  }
+  return msgs.map((m) => m.id);
 }
 
-// Boot-time recovery: redeliver any owed events a crash left in an outbox. A
-// per-company failure (e.g. a tampered chain that blocks the append) is logged,
-// never fatal — one company's problem must not stop the others or crash boot.
-async function recoverAll(companiesFn, loadFn, saveFn) {
+// Deliver every pending owed event to the tamper-evident chain, deleting each
+// row once it lands. Idempotent: appendIdempotent skips a message already on the
+// chain, so a replay after a partial crash cannot double-record.
+async function flush(conn, companyId) {
+  const rows = pending(conn, companyId);
+  const del = conn.prepare('DELETE FROM outbox WHERE msg_id = ?');
+  let delivered = 0;
+  for (const r of rows) {
+    await audit.appendIdempotent(companyId, r.type, JSON.parse(r.payload), r.msg_id);
+    del.run(r.msg_id);
+    delivered++;
+  }
+  return delivered;
+}
+
+// The whole transactional unit for a write handler: stage (atomic) then deliver.
+function commit(conn, companyId, docText, events) {
+  stage(conn, companyId, docText, events);
+  return flush(conn, companyId);
+}
+
+// Boot-time recovery: redeliver any owed events a crash left in the outbox
+// table. A per-company failure (e.g. a tampered chain that blocks the append) is
+// logged, never fatal — one company's problem must not stop the others.
+async function recoverAll(companiesFn) {
+  const conn = sqlite.connect();
   let recovered = 0;
   for (const c of companiesFn()) {
     try {
-      const db = loadFn(c.id);
-      if (Array.isArray(db.outbox) && db.outbox.length) {
-        recovered += await flush(db, c.id, saveFn);
-      }
+      recovered += await flush(conn, c.id);
     } catch (e) {
       console.error(`outbox recovery failed for company ${c.id}:`, e.message);
     }
@@ -80,4 +94,4 @@ async function recoverAll(companiesFn, loadFn, saveFn) {
   return recovered;
 }
 
-module.exports = { enqueue, flush, commit, recoverAll };
+module.exports = { pending, stage, flush, commit, recoverAll };

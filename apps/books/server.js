@@ -538,7 +538,7 @@ if (require.main === module) {
   // Redeliver any audit events a crash left owed in a company's outbox before
   // serving — a persisted mutation must never stay off the tamper-evident chain
   // (#24). Best-effort + logged: never fatal to boot.
-  outbox.recoverAll(companies, load, save).catch(e => console.error('outbox recovery error:', e.message));
+  outbox.recoverAll(companies).catch(e => console.error('outbox recovery error:', e.message));
   backup.scheduleSnapshots();   // tar the data dir now and daily, keep 7
   scheduleRecurring();          // materialize due recurring invoices now and daily (never on a GET)
   if (auth.authDisabled()) {
