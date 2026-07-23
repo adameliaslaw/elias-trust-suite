@@ -175,6 +175,31 @@ module.exports = (test) => {
     assert.strictEqual(v.chainedEvents, 60);
   });
 
+  test('audit: a ledger line larger than the tail window does not self-corrupt the chain (H2)', () => {
+    freshHome();
+    // A first, ordinary event...
+    store.appendEvent({ ts: '2026-01-01T10:00:00.000Z', type: 'stop', session: 's' });
+    // ...then an event whose serialized line exceeds the 8 KB tail window
+    // (a real case: a lawpay bundle carrying hundreds of entryIds).
+    const bigIds = Array.from({ length: 2000 }, (_, i) => `entry-${i}`);
+    store.appendEvent({ ts: '2026-01-01T10:01:00.000Z', type: 'payment_request', entryIds: bigIds, session: 's' });
+    const line2 = fs.readFileSync(store.ledgerPath(), 'utf8').trim().split('\n')[1];
+    assert.ok(line2.length > 8192, 'precondition: the second line must exceed the tail window');
+
+    // The NEXT append reads the tail to chain onto it. Before the fix the
+    // oversized last line was read truncated → parseLine null → seq reset to
+    // 0 with GENESIS prevHash, forking the chain.
+    store.appendEvent({ ts: '2026-01-01T10:02:00.000Z', type: 'stop', session: 's' });
+    const lines = readLines(store.ledgerPath());
+    assert.strictEqual(lines.length, 3);
+    assert.strictEqual(lines[2].seq, 2, 'seq must continue past the oversized line, not reset to 0');
+    assert.strictEqual(lines[2].prevHash, lines[1].hash);
+    const v = audit.verifyLedger(store.ledgerPath(), store.auditPath());
+    assert.strictEqual(v.ok, true, `chain must verify, got: ${v.error}`);
+    assert.strictEqual(v.chainedEvents, 3);
+    assert.strictEqual(v.legacyEvents, 0);
+  });
+
   test('audit: bin audit-verify exits non-zero on tampering', () => {
     freshHome();
     store.appendEvent({ ts: '2026-01-01T10:00:00.000Z', type: 'stop', session: 's' });
