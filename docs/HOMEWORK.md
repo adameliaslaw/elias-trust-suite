@@ -39,146 +39,119 @@
 
 ---
 
+
 ## Current handoff
 
-**Session that just ran:** Phase 6 (epic #25) — **PR 11**: the pass that **FINISHES the "split `server.js`" box**.
-Branch `claude/phase6-server-split-auth-audit` off latest `main` (`40a8dee`); PR **#46 open, referencing #25**
-(`Refs #25`, not `Fixes` — the epic still has ONE structural item left: schema migrations/roles/durable storage).
-Pure structural refactor fully covered by the 252-check smoke suite (NOT money/tax logic), so per CONTRIBUTING it
-may land on green CI. **Repo auto-merge is DISABLED**, so this session merged it by hand after the `ci` workflow
-concluded success on the final (docs) commit (squash). **Checks the "split `server.js`" box on #25** — with these
-two clusters out, all 11 route groups live in `lib/routes/*` and `server.js` is the bootstrap + dispatch + the
-shared invoice/recurring constructors that legitimately stay.
+**Session that just ran:** Phase 6 (epic #25) — **PR 12**: the last structural box, **part 1 of 2** —
+**schema-version + migration runner** and the **3-role household identity model**. Branch
+`claude/elias-phase-6-migrations-5dfhbj` off latest `main` (`05e69cf`); PR referencing #25 (`Refs #25`, not
+`Fixes` — durable storage, the box's third sub-item, is still outstanding as its own next PR). This is NOT a
+pure structural refactor — it changes persistence + access control — so per CONTRIBUTING the correctness rides
+on **reproducing tests written first** (migration round-trips + role enforcement), and the migration/security
+risk is covered by those tests in CI. **Repo auto-merge is DISABLED**, so this session merged by hand after the
+`ci` workflow concluded success on the final (docs) commit (squash).
 
-**Context — PR 1 through PR 10 are MERGED.** PR 1 (`@elias/rules` moat + payroll retrofit + four payroll/tax
-correctness fixes) landed as **PR #36** → `main` **`361e900`**. PR 2 (sales-tax + reports route group extracted
-into `apps/books/lib/routes/reports.js`) landed as **PR #37** → `main` **`298d948`**. PR 3 (expenses route group
-extracted into `apps/books/lib/routes/expenses.js`) landed as **PR #38** → `main` **`cdcd631`**. PR 4 (customers
-route group extracted into `apps/books/lib/routes/customers.js`) landed as **PR #39** → `main` **`ca7219c`**. PR 5
-(billable-time route group extracted into `apps/books/lib/routes/time.js`) landed as **PR #40** → `main`
-**`635db72`**. PR 6 (recurring-invoice route group extracted into `apps/books/lib/routes/recurring.js`) landed as
-**PR #41** → `main` **`b04f01e`**. PR 7 (household-taxes route group extracted into
-`apps/books/lib/routes/household.js`) landed as **PR #42** → `main` **`1b3e33b`**. PR 8 (payroll route group
-extracted into `apps/books/lib/routes/payroll.js`) landed as **PR #43** → `main` **`2886521`**. PR 9 (bank feed
-route group extracted into `apps/books/lib/routes/bank.js`) landed as **PR #44** → `main` **`1f348f1`**. PR 10
-(invoices route group extracted into `apps/books/lib/routes/invoices.js`) landed as **PR #45** → `main`
-**`40a8dee`**. With PR 11 the **server-split box closes**; #25 has **7/8 boxes** checked and stays OPEN for the one
-remaining structural item (schema migrations/roles/durable storage).
+**Owner decisions this session (ratified via AskUserQuestion):**
+- **Role model = 3 household roles: owner / bookkeeper / read-only.** (Not per-company; the real identity/session
+  home is Phase 7's `packages/auth` — this is the enforcement + audit-actor groundwork.)
+- **Durable storage = SQLite is the committed direction, delivered as its own next HUMAN-REVIEWED PR** (not
+  bundled with roles). JSON-per-company stays for now. Rationale: the switch re-touches the #24 secrets-at-rest +
+  transactional-outbox atomicity (both built around whole-file JSON writes), so it deserves its own focused,
+  reviewed pass — and doing it now (no real data yet) is the cheapest time to migrate. The schema-version +
+  migration runner built this session is engine-agnostic and carries into SQLite.
 
-**What landed this session (behavior-preserving, covered by the existing smoke suite):**
-- **Finished the incremental `server.js` split — the two remaining inline clusters.** Extracted both verbatim,
-  each wired in place so route-registration order is unchanged; handlers close over an explicit `deps` object
-  instead of the monolith's module scope. `server.js` **629 → 493 lines**.
-  - **`apps/books/lib/routes/auth.js`** — the **auth/companies/settings** cluster (10 handlers): `GET
-    /api/auth-status`, `POST /api/login`, `POST /api/logout`, `POST /api/password`, `GET/POST /api/companies`,
-    `POST /api/companies/:id/select`, `GET/PUT /api/settings`, `GET /api/categories`. deps: `sendJSON, notFound,
-    badRequest, readBody, loadGlobal, saveGlobal, companies, createCompany, commit, audit, auth, salestax`.
-  - **`apps/books/lib/routes/audit.js`** — the **audit/backup tail** (3 read-only GETs): `GET /api/audit`, `GET
-    /api/audit/chain`, `GET /api/backup`. deps: `sendJSON, todayISO, audit, backup, auth, loadGlobal`.
-- **One helper moved IN, the dispatcher's collaborators stayed OUT.** `secureAttr` (the `; Secure` cookie
-  attribute over TLS, L3) is used ONLY by the auth cluster's cookie-setting handlers (grep-confirmed), so it moved
-  into `auth.js` as an inner function — like `validExpense`/`validCustomer`/the four bank helpers before it.
-  Crucially, **`PUBLIC_ROUTES` and the session/auth middleware stayed in `server.js`**: the request *dispatcher*
-  (`handleRequest`) consults them, not just the handlers, so moving them would have broken auth on every route.
-- **Persistence preserved EXACTLY (no `commit`↔`save(db)` conversions).** This cluster is session/auth-flavored,
-  mostly **non-money**: password + company-registry writes hit the household `global.json` via `saveGlobal()`;
-  `login`/`logout`/`select` only set cookies (login/password also append an `auth.*` audit event directly). The
-  **one** money-adjacent exception is `PUT /api/settings`, which commits `settings.changed` through the
-  transactional outbox — `commit` is threaded, not introduced. The audit/backup tail is entirely read-only —
-  nothing saves or commits; `GET /api/audit` returns `{ verified, entries }` from the tamper-evident chain, not
-  the vestigial `db.auditLog` (H1). The 252-check smoke suite is **identical before/after** and still passes.
+**What landed this session (books; reproducing tests first, then implementation):**
+- **Schema versioning + migration runner — `apps/books/lib/migrations.js`.** Every store file carries a
+  `schemaVersion`. Ordered forward migrations (`{ version, up(obj) }`) run on load — applied only when their
+  version exceeds the file's (idempotent), logged (`[migrate] …`), and **never lossy** (steps only add/
+  transform). `store.load()` and `global.loadGlobal()` run the runner and, when a file is upgraded, **write it
+  back atomically** (tmp + rename, 0600) like a normal `save`. Seed stamps the current version so a fresh install
+  starts already-migrated. The old ad-hoc `migrate(db)` became **company migration v1** (now versioned + written
+  back). **Two version namespaces:** `COMPANY_SCHEMA_VERSION = 1`, `GLOBAL_SCHEMA_VERSION = 2`.
+  - **Gotcha fixed:** `loadGlobal` did `{ ...defaults, ...parsed }`, which let the default's current
+    `schemaVersion` **mask** a legacy file's missing one (blinding the runner). Now it trusts
+    `parsed.schemaVersion` explicitly. The company path has no such merge, so it was already correct.
+  - Round-trip tests: `apps/books/test/migrations.test.js` (19 checks) — legacy fixture → load → upgraded shape,
+    on disk + in memory, idempotent, 0600.
+- **3-role household identity (owner / bookkeeper / read-only).** The **household-shared password stays the
+  implicit DEFAULT OWNER**; named principals (bookkeeper / read-only) live in `global.json` `principals`, **seeded
+  empty by global schema migration v2**. Every pre-roles behavior is preserved (the 252-check smoke suite is
+  unchanged).
+  - **Enforcement is in the DISPATCHER auth gate** (`server.js`), beside `PUBLIC_ROUTES` + the auth check —
+    never in handlers (`isOwnerOnly`/`roleAllows`/`resolveRole`). owner = everything incl. principal admin +
+    backup; bookkeeper = all day-to-day/money writes but **no owner-only routes**; read-only = **GETs (+ logout)
+    only**. **Fail-closed** throughout (a session naming a deleted principal → 401).
+  - **Owner-only routes:** `/api/principals*`, `/api/password`, `/api/backup`.
+  - **`audit.actor` now surfaces the acting principal** (`jane@ip`); the default owner + trusted-network mode
+    keep the original `local@ip`, so **every pre-existing actor string is unchanged**.
+  - **`/api/login`** accepts an optional `username` (named-principal login); the password-only path is untouched.
+    **`/api/auth-status`** now also returns `role`/`username` (additive). Owner-only principal-admin routes in
+    **`apps/books/lib/routes/principals.js`** (GET/POST/PUT/DELETE `/api/principals`), wired in `server.js`.
+  - **Session model:** a session stores only the principal's `username` (null = default owner); the **role is
+    re-resolved from `global.json` per request**, so deleting a principal or changing a role takes effect on the
+    next request. `auth.createSession(username)` + `auth.sessionPrincipal(token)` are the new hooks.
+  - Role-enforcement tests: `apps/books/test/roles.test.js` (30 checks) — each role hits/is-denied the right
+    routes, named-principal login, actor attribution, deleted-principal session denial.
 
-**The extraction pattern (now complete — kept for reference / future modularization):**
-1. Create `apps/books/lib/routes/<group>.js` exporting `module.exports = function (route, deps) { const {...} = deps; route(method, pattern, handler); ... }`.
-2. Copy the handlers **verbatim** (don't "improve" them — this is a refactor). Identify every free variable
-   each handler used from `server.js` module scope and add it to the destructured `deps`. If an inline helper
-   FUNCTION (not a require) is used ONLY by the group (grep to confirm), move it in as an inner function;
-   requires and shared helpers thread through `deps` (keep the `require` line at the top of `server.js`).
-   **Helpers the dispatcher itself uses (`PUBLIC_ROUTES`, the auth middleware) stay in `server.js`.**
-3. In `server.js`, replace the inline `route(...)` block with `require('./lib/routes/<group>')(route, { ...deps });`
-   **at the same location** so registration order is preserved (route order only matters for overlapping
-   patterns, but keeping it identical keeps the diff honest and the smoke net exact).
-4. `npm run typecheck` + `npm test --workspace apps/books` must stay green with the **same 252 count**.
+**Next session → FINISH the #25 structural box (durable storage), then the rules migration, then close #25 → Phase 7:**
+- **Durable storage = the SQLite PR (its OWN human-reviewed PR; leave auto-merge off / request review).** Replace
+  the JSON-per-company file store with SQLite while there is still no real data. **Re-derive and re-verify the two
+  #24 boundaries against SQLite transactions, do not mechanically port them:** (a) secrets-at-rest
+  (`lib/secrets.js` seals known leaves on the way to a whole-file write) and (b) the transactional outbox
+  (`lib/outbox.js` rides the owed audit event *inside* the company JSON so it commits atomically with the mutation
+  via tmp+rename). SQLite's atomicity is row/transaction-level — the outbox can become a real table + a single
+  transaction, but prove exactly-once delivery + crash recovery still hold. The `schemaVersion` + migration-runner
+  concept carries over (a `schema_version` table / PRAGMA user_version + ordered forward migrations). Zero-dep
+  ethos + D2=B "host as-is": `better-sqlite3` is a native addon (node-gyp) and `node:sqlite` needs newer Node than
+  the repo's Node 20 target — call out the dependency choice in the PR. **When that lands, all three sub-items
+  (migrations ✅ + roles ✅ + durable storage) are done → the box closes → confirm #25 exit criteria → Phase 7 (#26).**
+- **Migrate more domains into `@elias/rules`** (correctness/moat, not a #25 blocker): sales-tax rate + ST-50/51
+  calendar, LEDES units, the 1040 planner brackets — same cited pattern, so those constants stop being inline
+  literals.
+- Then **Phase 7 (#26)** — suite integration + `packages/auth` (the natural home for the per-principal identity +
+  role work started here). **Phase 8 (#27)** stays parallelizable but "finalize last."
 
-**`server.js` now (493 lines) is essentially the bootstrap:** requires + config, the shared helpers
-(`sendJSON`/`readBody`/`badRequest`/`notFound`/`inRange`), the `route`/dispatch machinery
-(`route`/`handleRequest`/`withCompanyLock`/`serveStatic`/`PUBLIC_ROUTES`), the shared invoice/recurring
-constructors that legitimately stay (`validInvoice`/`createInvoice`/`generateRecurring`/`materializeAllRecurring`/
-`scheduleRecurring`), and `createServer`/`recoverAll`/`listen`. All eleven route groups are in `lib/routes/*`.
-
-**Next session → the ONE remaining Phase 6 structural item, then rules migration, then Phase 7:**
-- **Schema migrations / roles / durable storage before any multi-user deploy** (the last unchecked #25 box).
-  Books is a single-file JSON store today (`data/company-<id>.json` + `global.json`, whole-file `save()`); design
-  a migration/versioning story (a `schemaVersion` on the store + forward migrations run on load) + a role model
-  (owner vs. read-only vs. bookkeeper, given the household-shared password today). Gates multi-user. Once this box
-  closes, **both** #25 structural items are done → Phase 6 complete → Phase 7 (#26).
-- **Migrate more domains into `@elias/rules`:** sales-tax rate + ST-50/51 calendar, LEDES units, the 1040
-  planner brackets — same cited pattern, so those constants stop being inline literals. (Correctness/moat, not a
-  #25 checkbox blocker, but the natural next `@elias/rules` work.)
-- Then **Phase 7 (#26)** — suite integration + `packages/auth` (still needs 6).
-- **Phase 8 (#27)** stays parallelizable but "finalize last" (deploy-unblocking infra OK; not the integrated
-  release cut).
-
-**State of the repo:** all suites green (`npm test` exit 0 across every workspace — books **252**-suite,
-billable, iolta, audit 16, money 22, rules 13); `npm run typecheck` clean; `grep -c msh.team package-lock.json`
-= 0. Backlog: #24 CLOSED (P5); #16/#17/#18, #14, #11/#15, #12/#13/#20 closed; #19 ratified + closed.
-
-Phase 7 (#26) still needs 6. All money through `@elias/money`, all compliance events through `@elias/audit`;
-new money mutations use `store.commit`/`commitMany`, never `save(db)` + `audit.append`.
+**State of the repo:** all suites green (`npm test` exit 0 across every workspace — books **252**-smoke + **19**
+migration + **30** role, billable, iolta, audit 16, money 22, rules 13); `npm run typecheck` clean;
+`grep -c msh.team package-lock.json` = 0. Backlog: #24 CLOSED (P5); #16/#17/#18, #14, #11/#15, #12/#13/#20 closed;
+#19 ratified + closed. All money through `@elias/money`, all compliance events through `@elias/audit`; new money
+mutations use `store.commit`/`commitMany`, never `save(db)` + `audit.append`. **When you add save/migration paths,
+preserve the atomic-save + outbox semantics from #24.**
 
 **Gotchas (carried forward + new):**
-- **NEW — `@elias/rules` build order:** `apps/books` now depends on the built `@elias/rules` `dist/`. books'
-  `pretest` builds money + audit + **rules** (`--workspace @elias/rules`); if you run a books test file
-  directly (`node test/payroll.test.js`) after editing `packages/rules/src/*`, **rebuild rules first**
-  (`npm run build --workspace @elias/rules`) or you'll test stale dist. Root CI (`npm ci` → `typecheck` →
-  `test`) covers it because books' pretest fires. `dist/` is gitignored (don't commit it).
-- **NEW — payroll params come from `@elias/rules`:** `tables2026.js` is **gone**. Tax/withholding constants
-  live in `packages/rules/src/payroll.ts`, each cited; the engine reads them via `payrollValues(year)`
-  (memoized, materialized to the old plain shape). To add a tax year: add a cited `PayrollParams` for that
-  year and `registerPayroll` it — do NOT reintroduce a per-year JS table. Every leaf MUST carry a non-empty
-  `authority`+`locator` (a rules test enforces this). Adding/moving constants → update the citation.
-- **NEW — payroll net guard + §402(g):** `computePaycheck` never returns negative net (voluntary deductions
-  are trimmed after-tax→Roth→pre-tax-401k→health, re-evaluating taxes on a pre-tax trim). Elective deferrals
-  are §402(g)-capped using `ytd.electiveDeferrals` (summed in `service.js#ytdTotals` from
-  `dedPretax401k`+`dedRoth401k`). New result fields: `electiveDeferral`, `deductionsReduced`. If you add a
-  new deferral kind, add it to `ELECTIVE_DEFERRAL_KINDS` in `engine.js`.
-- **NEW — salestax snapshot:** new invoice payments carry `taxSnapshot` (the invoice tax/total ratio at
-  payment time); `salestax.paymentIncomeParts` reads it so a later invoice edit can't restate a booked
-  period. If you add another code path that pushes to `inv.payments`, attach `salestax.taxSplitSnapshot(dInv)`
-  (there are 3 sites in `server.js`). Legacy payments without a snapshot still use the live invoice.
-- **NEW — books transactional outbox:** money handlers now call `store.commit(db, companyId, type, payload)`
-  (or `commitMany(db, companyId, [{type, payload}, ...])`) INSTEAD of `save(db); await audit.append(...)`.
-  If you add a new money mutation, use `commit`, not the old pair — otherwise its audit event is not
-  crash-atomic. commit does enqueue→save→flush; the in-memory `db.outbox` is drained on success. Recovery
-  runs on boot (`outbox.recoverAll`). A new semantic event delivered via commit gets an extra `outboxId`
-  field in its audit payload (idempotency key) — harmless, additive.
-- **NEW — billable Clio intents:** `clio.push_intent` is a ledger event (like `payment_request`), ignored by
-  `buildEntries` (only `prompt`/`tool`/`stop`/`manual` become billable time), so it never becomes billable
-  time. If you change `activityBody`'s shape, `pushKey` (which hashes date/quantity/note) changes too — a
-  content change is intentionally a *different* idempotency key.
-- `npm ci` then `npm run build --workspace @elias/money --workspace @elias/audit` before app tests (apps
-  depend on built `dist/`). **After editing `packages/audit` types, rebuild it** or dependents typecheck
-  against stale `dist/`. (Phase 4 did NOT touch `@elias/audit` — the new billing events reuse the existing
-  `entry.override_written` chain, so no audit rebuild was needed.)
-- **Do NOT `git checkout apps/billable/bin/billable.js` to drop a mode diff** — it reverts content too.
-  **HEAD mode is `100755`** (an earlier handoff said `644` — that is WRONG for this repo state; verified
-  `git ls-files -s` → `100755`). If a test run flips the bit, `chmod 755` to match HEAD, NOT `chmod 644`
-  (`chmod 644` CREATES a diff here). This session's runs did not touch the bit.
-- Lockfile must keep `grep -c msh.team package-lock.json` = 0.
-- **billable's test runner (`test/run.js`) fires async tests WITHOUT awaiting** — they resume after the whole
-  synchronous sweep and read whatever `process.env.BILLABLE_HOME` is then set to. A sync test that
-  `freshHome()`s and leaves a *throwing* ledger active will crash unrelated async tests. Phase 4's new tests
-  either stay synchronous or save/restore `BILLABLE_HOME`; if you add async billable tests, keep them
-  self-consistent on the final env and never leave a corrupt home active.
-- billable billing logic lives in the pure modules — `entries.js` (build/override/totals),
-  `client-billing.js` (the billed marker + client-export gate), `ledes.js`, `economics.js`. Extend those,
-  not the `server.js` request handlers.
-- billable has no typecheck/lint in CI (plain JS, L1) — lean on the runtime tests (`node test/run.js`).
-- **books secrets-at-rest (#24):** the in-memory `db` is ALWAYS plaintext; encryption happens only in
-  `store.save`/`store.load` via `lib/secrets.js`. If you add a new secret field, add its path to
-  `applyToSecrets` — it is an enumerated allowlist on purpose. The key resolves from
-  `QUICKBUCKS_ENCRYPTION_KEY` (any passphrase) or a generated `data/.secret.key` (0600); tests use the keyfile
-  path (they `delete process.env.QUICKBUCKS_ENCRYPTION_KEY`). The keyfile is excluded from backups — keep it
-  that way, and keep new data files 0600.
-- **books audit UI reads the chain now (H1):** `/api/audit` returns `{ verified, entries }`, not an array.
-  `db.auditLog` is vestigial (still written by the dispatcher for back-compat) — nothing reads it anymore.
+- **NEW — schema migrations:** to add a store-file migration, append a `{ version: N, up(obj) }` step to
+  `COMPANY_MIGRATIONS` / `GLOBAL_MIGRATIONS` in `lib/migrations.js` (N = next integer) and bump the matching
+  `*_SCHEMA_VERSION`. **Do NOT edit an existing step** — files already at that version will not re-run it. Migrated
+  files are **written back atomically on load** (so a load can write; that is intentional + idempotent, and boot
+  triggers it before serving, not on a user GET). `dist/` unaffected. If you change `loadGlobal`'s file-merge,
+  keep it trusting `parsed.schemaVersion` (see the masking gotcha above) or the runner goes blind.
+- **NEW — roles / dispatcher gate:** authorization lives in `server.js` (`isOwnerOnly`/`roleAllows`/`resolveRole`),
+  NOT in handlers. If you add an owner-only route, add its path to `isOwnerOnly`. A session stores the principal
+  `username`; role is resolved fresh from `global.json` each request. `audit.actor(req)` reads `req.principal`
+  (set by the dispatcher) — a named principal → `username@ip`, the default owner / trusted mode → `local@ip`
+  (unchanged). New principals go in `global.json.principals` (seeded by global migration v2); never store a
+  password in plaintext (`auth.hashPassword`). The 252 smoke suite runs mostly with `QUICKBUCKS_DISABLE_AUTH=1`
+  (→ owner, no gate) + the default-owner login, so it exercises no 403 paths — the role paths are covered by
+  `test/roles.test.js`.
+- **`@elias/rules` build order:** `apps/books` depends on the built `@elias/rules` `dist/`. books' `pretest`
+  builds money + audit + rules; if you run a books test file directly after editing `packages/rules/src/*`,
+  **rebuild rules first** (`npm run build --workspace @elias/rules`). `dist/` is gitignored.
+- **payroll params come from `@elias/rules`:** `tables2026.js` is gone; constants live in
+  `packages/rules/src/payroll.ts` (cited), read via `payrollValues(year)`. Add a tax year by registering a cited
+  `PayrollParams`, not a per-year JS table.
+- **books transactional outbox / secrets-at-rest (#24):** money handlers call `store.commit`/`commitMany`
+  (enqueue→atomic save→flush), never `save(db)` + `audit.append`. The in-memory `db` is ALWAYS plaintext;
+  encryption happens only in `store.save`/`store.load` via `lib/secrets.js` (add a new secret field's path to the
+  enumerated `applyToSecrets` allowlist). `/api/audit` returns `{ verified, entries }` from the tamper-evident
+  chain (H1). Keep new data files 0600; keep `data/.secret.key` out of backups.
+- **Do NOT `git checkout apps/billable/bin/billable.js` to drop a mode diff** — HEAD mode is **`100755`**
+  (verified `git ls-files -s`). If a run flips the bit, `chmod 755` to match, NOT `chmod 644`. This session did
+  not touch it.
+- **`npm ci` can install incompletely** (missing `@types/node` breaks the `@elias/audit` TS build); if a package
+  build fails on missing node types, **re-run `npm ci`** (hit this session; re-run fixed it). Lockfile must keep
+  `grep -c msh.team package-lock.json` = 0.
+- **Raw `api.github.com` curl is blocked (403)** — use `mcp__github__*` tools. `actions_list`/`actions_get`
+  outputs are huge — jq the saved file for the run id + `conclusion`. Pushing docs to the branch retriggers CI —
+  merge only after the run on the **final** commit concludes success.
+- **billable's `test/run.js` fires async tests WITHOUT awaiting**; keep new billable tests self-consistent on the
+  final `BILLABLE_HOME`. billable has no typecheck/lint in CI (plain JS) — lean on `node test/run.js`.
