@@ -4,8 +4,10 @@
 > [HOMEWORK.md](HOMEWORK.md) for exactly where to start, then the epic issue for the phase.
 > Canonical plan: [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) · Findings narrative:
 > [EVALUATION.md](EVALUATION.md) · Backlog: GitHub Issues **#11–#27**.
-> Last updated: 2026-07-23 — **Phase 6 (#25) 🟨 in progress — first PR open: `packages/rules` moat + payroll
-> retrofit + payroll/tax correctness fixes.** Phase 5 (#24) ✅ done + MERGED (PR #34); Phase 0 (#19) ✅ ratified
+> Last updated: 2026-07-23 — **Phase 6 (#25) 🟨 in progress — PR 1 MERGED (#36, squashed to `main` as
+> `361e900`): `packages/rules` moat + payroll retrofit + payroll/tax correctness fixes (6/8 boxes). PR 2 open:
+> begin the `server.js` split — sales-tax + reports route group extracted behind the 252-check smoke suite.**
+> Phase 5 (#24) ✅ done + MERGED (PR #34); Phase 0 (#19) ✅ ratified
 > (D1=C, D2=B, D3=C split-by-domain, D4=B). Phase 5 = data + audit hardening; all 8 checklist
 > items landed with reproducing tests: fail-closed iolta verify against the recorded head + surfaced offline
 > queue (#16); billable ledger reads the full last line so a >8 KB line no longer self-corrupts the chain (H2);
@@ -114,7 +116,7 @@ The tests are valuable but largely do not cover these paths.
 | 3 — Reconciliation lifecycle + retention | #22 | ✅ Done (#14 closed) |
 | 4 — Redesign Matterproof billing | #23 | ✅ Done (#17, #18 fixed) |
 | 5 — Data + audit hardening | #24 | ✅ Done — PR #34 merged (8/8; Clio retry dedup + books transactional outbox) |
-| 6 — Books role + `packages/rules` | #25 | 🟨 **In progress** — PR 1 open: `@elias/rules` + payroll retrofit + tax fixes |
+| 6 — Books role + `packages/rules` | #25 | 🟨 **In progress** — PR 1 MERGED (#36): `@elias/rules` + payroll retrofit + tax fixes (6/8). PR 2 open: `server.js` split begun (sales-tax + reports group) |
 | 7 — Suite integration + `packages/auth` | #26 | ⬜ Blocked on 2–6 (needs 6) |
 | 8 — Release engineering | #27 | ⬜ Parallelizable; finalize last |
 
