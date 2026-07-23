@@ -58,7 +58,11 @@ function walk(dir, prefix, out, exclude) {
 function tarball() {
   const out = [];
   if (fs.existsSync(DATA_DIR)) {
-    walk(DATA_DIR, 'quickbucks-data', out, new Set(['backups']));
+    // Exclude the snapshot dir (no nesting) AND the encryption keyfile: a
+    // backup must be ciphertext-only, so a stolen tarball cannot decrypt the
+    // secrets it contains. The key is held separately (env or the untarred
+    // data dir).
+    walk(DATA_DIR, 'quickbucks-data', out, new Set(['backups', '.secret.key']));
   }
   out.push(Buffer.alloc(1024));   // end-of-archive: two zero blocks
   return Buffer.concat(out);

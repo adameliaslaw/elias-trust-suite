@@ -145,9 +145,19 @@ async function main() {
   });
   const session = loginRes.headers.get('set-cookie').split(';')[0];
   check('login sets session cookie', loginRes.status === 200 && session.startsWith('qb_session='));
+  // L3: the session cookie is Secure when the request arrived over TLS, and
+  // omits it on plain-http localhost (or login would break in dev).
+  check('session cookie omits Secure on plain-http', !/;\s*Secure/i.test(loginRes.headers.get('set-cookie')));
+  const tlsLogin = await fetch(BASE + '/api/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-forwarded-proto': 'https' },
+    body: JSON.stringify({ password: 'secret123' })
+  });
+  check('session cookie is Secure behind TLS (x-forwarded-proto=https)', /;\s*Secure/i.test(tlsLogin.headers.get('set-cookie')));
   let authed = await fetch(BASE + '/api/audit?limit=30', { headers: { cookie: session } });
-  const loginAudits = (await authed.json()).filter(e => e.path === '/api/login');
-  check('login attempts land in the audit log',
+  const loginAudits = (await authed.json()).entries
+    .filter(e => e.type === 'http.write' && e.payload.path === '/api/login')
+    .map(e => e.payload);
+  check('login attempts land in the audit chain',
     loginAudits.some(e => e.status === 401) && loginAudits.some(e => e.status === 429) && loginAudits.some(e => e.status === 200));
   authed = await fetch(BASE + '/api/customers', { headers: { cookie: session } });
   check('session grants API access', authed.status === 200);
@@ -675,6 +685,24 @@ async function main() {
   r = await req('POST', '/api/recurring', { customerId: 'nope', items: [], nextDate: '2026-08-01' });
   check('template validation runs', r.status === 400);
 
+  // M7: concurrent writes serialize per company — no lost saves, no forked
+  // audit chain. Fire a burst of invoice creates at once; every one must
+  // persist with a distinct number and the tamper-evident chain must still
+  // verify (an interleaved save or a forked append would break one of these).
+  const beforeBurst = (await req('GET', '/api/invoices')).data.length;
+  const N = 15;
+  await Promise.all(Array.from({ length: N }, (_, i) =>
+    req('POST', '/api/invoices', {
+      customerId: cafeCust.id, date: '2026-07-20',
+      items: [{ description: `Concurrent ${i}`, qty: 1, rate: 100 + i }]
+    })));
+  const afterBurst = (await req('GET', '/api/invoices')).data;
+  check('every concurrent create persisted (no lost save)', afterBurst.length === beforeBurst + N);
+  const burstNumbers = afterBurst.filter(inv => /^INV-/.test(inv.number)).map(inv => inv.number);
+  check('concurrent creates got distinct invoice numbers', new Set(burstNumbers).size === burstNumbers.length);
+  check('the audit chain still verifies after the concurrent burst',
+    (await req('GET', '/api/audit')).data.verified.ok === true);
+
   // ---- billable time tracking ----
   r = await req('POST', '/api/time', { customerId: 'nope', date: '2026-07-01', hours: 1, rate: 350, description: 'x' });
   check('time entry requires a real customer', r.status === 400);
@@ -840,9 +868,32 @@ async function main() {
   check('untracked vendor no longer flagged', r.data.vendors.find(v => v.name === 'Cleaning Crew LLC').needs1099 === false);
 
   r = await req('GET', '/api/audit');
-  check('audit log records mutations, newest first', r.data.length > 0 &&
-    r.data[0].method === 'POST' && r.data[0].path === '/api/vendors/1099' && r.data[0].status === 200);
-  check('audit log never records reads', r.data.every(e => e.method !== 'GET'));
+  // H1: /api/audit surfaces the TAMPER-EVIDENT chain, not db.auditLog.
+  check('audit endpoint returns the verified chain envelope',
+    r.data && r.data.verified && Array.isArray(r.data.entries));
+  check('audit chain verifies as tamper-evident', r.data.verified.ok === true && r.data.verified.entries > 0);
+  const auditEntries = r.data.entries;
+  const httpWrites = auditEntries.filter(e => e.type === 'http.write');
+  check('audit chain records mutations, newest first (as chained entries)',
+    auditEntries.length > 0 && httpWrites[0].payload.method === 'POST' &&
+    httpWrites[0].payload.path === '/api/vendors/1099' && httpWrites[0].payload.status === 200);
+  check('audit entries are hash-chained (seq + 64-hex hash), not the forgeable log',
+    auditEntries.every(e => Number.isInteger(e.seq) && /^[0-9a-f]{64}$/.test(e.hash)));
+  check('audit chain never records reads', httpWrites.every(e => e.payload.method !== 'GET'));
+
+  // M8: a tampered audit chain must not 400 read-only GETs. Previously
+  // dashboard/invoice reads called generateRecurring → audit.append →
+  // verify-on-open threw on a broken chain → the read 400'd. Reads no longer
+  // touch the chain at all.
+  const companyId = (await req('GET', '/api/companies')).data.find(c => c.active).id;
+  const chainFile = require('../lib/audit').chainFile(companyId);
+  const chainLines = fs.readFileSync(chainFile, 'utf8').trim().split('\n');
+  const forged = JSON.parse(chainLines[0]); forged.payload = { ...forged.payload, tampered: true };
+  chainLines[0] = JSON.stringify(forged);
+  fs.writeFileSync(chainFile, chainLines.join('\n') + '\n');
+  check('a tampered chain surfaces as a verification failure', (await req('GET', '/api/audit')).data.verified.ok === false);
+  check('a tampered chain does not 400 the dashboard (GETs are read-only)', (await req('GET', '/api/dashboard')).status === 200);
+  check('a tampered chain does not 400 the invoice list (GETs are read-only)', (await req('GET', '/api/invoices')).status === 200);
 
   // static
   const page = await fetch(BASE + '/');

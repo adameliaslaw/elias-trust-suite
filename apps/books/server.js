@@ -113,6 +113,16 @@ function route(method, pattern, handler) {
 }
 
 // -- auth (public routes; see PUBLIC_ROUTES below) --
+// Append "; Secure" whenever the request actually arrived over TLS (directly or
+// via a terminating proxy). A session/company cookie sent in cleartext — e.g.
+// the server bound to 0.0.0.0 and reached over a LAN — is interceptable; Secure
+// pins it to HTTPS. Omitted on plain-http localhost dev so login still works.
+function secureAttr(req) {
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  const isTls = proto === 'https' || req.socket?.encrypted === true;
+  return isTls ? '; Secure' : '';
+}
+
 // The password is household-level (global.json), shared by all companies.
 route('GET', '/api/auth-status', (req, res) => {
   const g = loadGlobal();
@@ -143,12 +153,12 @@ route('POST', '/api/login', async (req, res) => {
   }
   auth.resetLoginFails(req);
   const token = auth.createSession();
-  res.setHeader('Set-Cookie', `qb_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`);
+  res.setHeader('Set-Cookie', `qb_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secureAttr(req)}`);
   sendJSON(res, 200, { ok: true });
 });
 route('POST', '/api/logout', (req, res) => {
   auth.destroySession(auth.parseCookies(req).qb_session);
-  res.setHeader('Set-Cookie', 'qb_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+  res.setHeader('Set-Cookie', `qb_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secureAttr(req)}`);
   sendJSON(res, 200, { ok: true });
 });
 route('POST', '/api/password', async (req, res) => {
@@ -170,7 +180,7 @@ route('POST', '/api/password', async (req, res) => {
   // aren't locked out of their own session.
   auth.clearSessions();
   const token = auth.createSession();
-  res.setHeader('Set-Cookie', `qb_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`);
+  res.setHeader('Set-Cookie', `qb_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secureAttr(req)}`);
   await audit.append(req.companyId, 'auth.password_changed', { principal: 'local' });
   sendJSON(res, 200, { ok: true, protected: !!g.passwordHash });
 });
@@ -188,7 +198,7 @@ route('POST', '/api/companies', async (req, res) => {
 route('POST', '/api/companies/:id/select', (req, res, db, params) => {
   const company = companies().find(c => c.id === params.id);
   if (!company) return notFound(res);
-  res.setHeader('Set-Cookie', `qb_company=${company.id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`);
+  res.setHeader('Set-Cookie', `qb_company=${company.id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000${secureAttr(req)}`);
   sendJSON(res, 200, { ok: true, id: company.id, name: company.name });
 });
 
@@ -279,8 +289,7 @@ route('DELETE', '/api/customers/:id', (req, res, db, params) => {
 });
 
 // -- invoices --
-route('GET', '/api/invoices', async (req, res, db) => {
-  await generateRecurring(db, req);
+route('GET', '/api/invoices', (req, res, db) => {
   const list = db.invoices.map(inv => {
     const c = db.customers.find(x => x.id === inv.customerId);
     return { ...decorateInvoice(inv), customerName: c ? (c.company || c.name) : '(deleted)' };
@@ -319,21 +328,50 @@ function createInvoice(db, b) {
   return inv;
 }
 
-// Materialize any due recurring invoices before reads that show them.
-// Generated invoices are money events: they are chained like manual ones.
-async function generateRecurring(db, req) {
+// Materialize any due recurring invoices. Generated invoices are money events:
+// they are chained like manual ones.
+//
+// M8: this must NOT run inside a GET. Creating + persisting + audit-appending on
+// a read makes the read non-idempotent (unsafe for prefetch/retries) and, worse,
+// a tampered audit chain makes audit.append throw, turning an otherwise
+// read-only dashboard/invoice list into a 400. It now runs from the recurring
+// write path (immediate first bill) and from a startup+daily scheduler.
+async function generateRecurring(db, companyId, actor) {
   const created = recurring.generateDue(db, createInvoice, todayISO());
   if (created.length) {
     save(db);
     for (const inv of created) {
-      await audit.append(req.companyId, 'invoice.created', {
+      await audit.append(companyId, 'invoice.created', {
         invoiceId: inv.id, clientId: inv.customerId,
         totalCents: audit.centsStr(decorateInvoice(inv).total),
-        source: 'recurring', actor: audit.actor(req)
+        source: 'recurring', actor
       });
     }
   }
   return created;
+}
+
+// Sweep every company for due recurring invoices. Per-company failures (e.g. a
+// tampered audit chain blocking the append) are logged, never fatal — one
+// company's problem must not stop the others or crash startup.
+async function materializeAllRecurring() {
+  for (const c of companies()) {
+    try {
+      await generateRecurring(load(c.id), c.id, 'local@scheduler');
+    } catch (e) {
+      console.error(`recurring materialization failed for company ${c.id}:`, e.message);
+    }
+  }
+}
+
+// Materialize now, then daily. unref() so short-lived processes (tests) exit.
+function scheduleRecurring() {
+  materializeAllRecurring().catch(e => console.error('recurring materialization error:', e.message));
+  const timer = setInterval(() => {
+    materializeAllRecurring().catch(e => console.error('recurring materialization error:', e.message));
+  }, 24 * 60 * 60 * 1000);
+  if (timer.unref) timer.unref();
+  return timer;
 }
 
 route('POST', '/api/invoices', async (req, res, db) => {
@@ -499,7 +537,7 @@ route('POST', '/api/recurring', async (req, res, db) => {
   if (err) return badRequest(res, err);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(tpl.nextDate)) return badRequest(res, 'A first bill date is required');
   db.recurringInvoices.push(tpl);
-  await generateRecurring(db, req);   // a first date of today (or earlier) bills immediately
+  await generateRecurring(db, req.companyId, audit.actor(req));   // a first date of today (or earlier) bills immediately
   save(db);
   sendJSON(res, 201, tpl);
 });
@@ -1873,8 +1911,7 @@ route('POST', '/api/salestax/remit', async (req, res, db) => {
 });
 
 // -- dashboard --
-route('GET', '/api/dashboard', async (req, res, db) => {
-  await generateRecurring(db, req);
+route('GET', '/api/dashboard', (req, res, db) => {
   const invoices = db.invoices.map(decorateInvoice).filter(i => i.status !== 'draft');
   const today = todayISO();
 
@@ -1983,10 +2020,21 @@ route('GET', '/api/reports/aging', (req, res, db) => {
   sendJSON(res, 200, { buckets, summary, total: money.sum(...Object.values(summary)) });
 });
 
-// -- audit log (written centrally in the dispatcher for every mutation) --
-route('GET', '/api/audit', (req, res, db, params, query) => {
+// -- audit log --
+// Surfaces the TAMPER-EVIDENT chain (the hash-chained file outside the mutable
+// company-<id>.json), not db.auditLog — the forgeable copy that lives inside
+// the very file it audits. Entries carry seq/hash and ship with the chain's
+// verification result so the UI shows the record that actually resists forgery.
+route('GET', '/api/audit', async (req, res, db, params, query) => {
   const limit = Math.min(Number(query.get('limit')) || 100, 500);
-  sendJSON(res, 200, [...db.auditLog].reverse().slice(0, limit));
+  let verified;
+  try {
+    verified = await audit.verify(req.companyId);
+  } catch (e) {
+    verified = { ok: false, entries: 0, error: e.message, atSeq: e.atSeq ?? null };
+  }
+  const entries = await audit.entries(req.companyId, limit);
+  sendJSON(res, 200, { verified, entries });
 });
 // Integrity status of the tamper-evident chain: full re-verification on
 // every call. { ok: true, entries } — or ok:false naming the first bad seq.
@@ -2042,6 +2090,23 @@ function serveStatic(req, res, pathname) {
   });
 }
 
+// Serialize mutating requests per company (M7). The datastore is one shared
+// in-memory object per company persisted with a whole-file save(); two write
+// requests that interleave across their awaits (readBody, audit.append) can
+// clobber each other's save or race the audit append. A per-company promise
+// chain makes each non-GET request's read-modify-save-append run to completion
+// before the next starts — the money mutation and its audit append land as one
+// uninterrupted unit.
+const companyLocks = new Map();
+function withCompanyLock(companyId, fn) {
+  const prev = companyLocks.get(companyId) || Promise.resolve();
+  const next = prev.then(fn, fn); // run regardless of the prior result
+  // Keep the chain alive but never let a rejection wedge the queue. fn handles
+  // its own errors, so this is belt-and-suspenders.
+  companyLocks.set(companyId, next.then(() => {}, () => {}));
+  return next;
+}
+
 async function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = url.pathname;
@@ -2075,35 +2140,40 @@ async function handleRequest(req, res) {
         // Malformed %-encoding in a route param — reject, don't crash.
         return badRequest(res, 'Malformed URL encoding');
       }
-      try {
-        await r.handler(req, res, db, params, url.searchParams);
-      } catch (e) {
-        badRequest(res, e.message || 'Bad request');
-      }
-      // Audit trail: who-did-what for every write — including login attempts,
-      // so brute-force bursts are visible. Paths only — request bodies are
-      // never logged (they can carry passwords and bank keys).
-      if (req.method !== 'GET' && pathname !== '/api/auth-status') {
-        db.auditLog.push({
-          ts: new Date().toISOString(),
-          method: req.method,
-          path: pathname,
-          status: res.statusCode
-        });
-        if (db.auditLog.length > 500) db.auditLog.splice(0, db.auditLog.length - 500);
-        save(db);
-        // Layer A: the same write, chained and tamper-evident. This runs
-        // after the response, so a chain failure can only be loud (stderr),
-        // not roll back — semantic money events are awaited pre-response in
-        // the handlers themselves.
+      const runHandler = async () => {
         try {
-          await audit.append(req.companyId, 'http.write', {
-            method: req.method, path: pathname, status: res.statusCode, actor: audit.actor(req)
-          });
+          await r.handler(req, res, db, params, url.searchParams);
         } catch (e) {
-          console.error('audit chain append failed:', e.message);
+          badRequest(res, e.message || 'Bad request');
         }
-      }
+        // Audit trail: who-did-what for every write — including login attempts,
+        // so brute-force bursts are visible. Paths only — request bodies are
+        // never logged (they can carry passwords and bank keys).
+        if (req.method !== 'GET' && pathname !== '/api/auth-status') {
+          db.auditLog.push({
+            ts: new Date().toISOString(),
+            method: req.method,
+            path: pathname,
+            status: res.statusCode
+          });
+          if (db.auditLog.length > 500) db.auditLog.splice(0, db.auditLog.length - 500);
+          save(db);
+          // Layer A: the same write, chained and tamper-evident. A chain
+          // failure is loud (stderr), not a rollback — semantic money events
+          // are awaited pre-response in the handlers themselves.
+          try {
+            await audit.append(req.companyId, 'http.write', {
+              method: req.method, path: pathname, status: res.statusCode, actor: audit.actor(req)
+            });
+          } catch (e) {
+            console.error('audit chain append failed:', e.message);
+          }
+        }
+      };
+      // GETs are read-only (M8) and need no lock; mutations serialize per
+      // company so their read-modify-save-append cannot interleave (M7).
+      if (req.method === 'GET') await runHandler();
+      else await withCompanyLock(req.companyId, runHandler);
       return;
     }
     return notFound(res);
@@ -2125,6 +2195,7 @@ const server = http.createServer((req, res) => {
 if (require.main === module) {
   seedIfEmpty();
   backup.scheduleSnapshots();   // tar the data dir now and daily, keep 7
+  scheduleRecurring();          // materialize due recurring invoices now and daily (never on a GET)
   if (auth.authDisabled()) {
     console.log('Warning: QUICKBUCKS_DISABLE_AUTH=1 — the API is unauthenticated (trusted-network mode)');
   }

@@ -41,9 +41,42 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 4 (epic #23) — Matterproof billing redesign. All #23 checklist items done;
-one PR opened off `main` (branch `claude/phase4-matterproof-billing-prr5ln`). Criticals #17 and #18 closed
-by the PR.
+**Session that just ran:** Phase 5 (epic #24) — data + audit hardening. **7 of 8** checklist items landed with
+reproducing tests; one PR opened off `main` (branch `claude/phase-5-kickoff-tintze`). Critical #16 closed.
+**Auto-merge is intentionally OFF** (money-at-rest + security: encryption, cookies, store locking are not
+fully covered by CI semantics) — request human review, per CONTRIBUTING's exception.
+
+**What landed this session (each with a reproducing test):**
+- **#16 (critical) — iolta fail-closed verify.** `src/audit-chain.ts` gains `verifyChainState(docs, head,
+  pendingCount)`; `src/audit.ts#verifyAuditChain` now fetches the CAS head (`auditMeta/{uid}`) + reads the
+  offline queue and reconciles all three. Dropped tail entries, a missing/rewound head, or unflushed queued
+  events fail closed (before, a truncated chain verified "ok"). 7 new cases in `test/audit.test.ts`.
+- **H2 — billable `readLastLine`** (`src/audit.js`) scans backward in chunks to read the WHOLE last line, so a
+  >8 KB ledger line no longer resets seq to 0 and self-corrupts the chain.
+- **H1 — books `/api/audit`** returns `{ verified, entries }` from the hash-chained file via new
+  `audit.entries()`, not the forgeable `db.auditLog`. Frontend audit card renders the chain + a verified badge.
+- **#24 — books secrets at rest.** New `lib/secrets.js` (AES-256-GCM) seals known secret leaves at the store
+  boundary (`store.save`→`sealForStorage`, `store.load`→`openFromStorage`); in-memory db stays plaintext.
+  Key: `QUICKBUCKS_ENCRYPTION_KEY` or a 0600 `data/.secret.key` **excluded from backups**; company files +
+  global.json written 0600. Plaintext (pre-encryption) passes through decrypt and seals on next save.
+- **M8 + L3 — books.** `generateRecurring` removed from GET handlers → new `scheduleRecurring()` (startup +
+  daily) + the recurring write path; a tampered chain no longer 400s a read. Cookies get `; Secure` over TLS
+  (`secureAttr(req)`).
+- **M7 — books.** Per-company `withCompanyLock` serializes each non-GET request's read-modify-save-append.
+- **LawPay idempotency (partial of the outbox item).** `lawpay.markRequested` is now idempotent on its
+  deterministic reference (a retry appends no duplicate `payment_request`; A/R counts it once).
+
+**Remaining Phase 5 item (defer to a follow-up, keep #24 open):** the BROAD *non-atomic financial+audit
+writes across apps* + *Clio external-side dedup* / transactional-outbox. What's genuinely left:
+  - **Clio push retry safety (`apps/billable/src/clio.js#pushEntries`)** — if the Clio POST succeeds but the
+    process dies before `store.writeOverride({clioId})`, a retry re-POSTs and duplicates the Clio activity.
+    Needs an idempotency key sent to Clio (external-API dependent) or a pre-POST outbox intent record. LawPay
+    is already safe (deterministic reference + this session's duplicate guard).
+  - **books crash-atomicity of save()+audit.append** — M7 removes the *interleave* race, but the JSON `save()`
+    and the separate audit JSONL append are still two writes; a crash between them can leave them out of step.
+    A true transactional outbox (write intent → apply → mark done) would close this. Medium/large; design it
+    deliberately, don't rush.
+Prior session: Phase 4 (epic #23) — all items done; criticals #17/#18 closed.
 
 **Decision context:** #19 **Decision 3 (system of record) is still unratified** (no sign-off comment, box
 unchecked as of this session). Phase 4 is decision-safe under the recommended default C: time capture with
@@ -86,15 +119,13 @@ not a general ledger.
   to the new confirmed-minutes contract (no tests deleted to go green — the removed exports-gate test pinned a
   deliberately-superseded stopgap and was replaced by stronger structural tests).
 
-**State of the repo:** all suites green (`npm test` exit 0 across every workspace — billable 52, iolta 18,
-audit 16, money 22; books green); typecheck clean. Billable determinism verified 5/5 runs. Backlog: #17/#18
-closed by this PR; #14 (Phase 3), #11/#15 (Phase 2), #12/#13/#20 (Phase 1) closed. #19 unratified.
+**State of the repo:** all suites green (`npm test` exit 0 across every workspace — books 252, billable 53,
+iolta 18, audit 16, money 22); typecheck clean. Backlog: #16 closed by this PR; #24 stays OPEN for the
+remaining cross-app outbox/Clio item; #17/#18 (Phase 4), #14 (Phase 3), #11/#15 (Phase 2), #12/#13/#20
+(Phase 1) closed. #19 unratified (gates Phases 6–7 only).
 
-**Next session → Phase 5 (epic #24): data + audit hardening.** Unblocked (Phases 2–4 done). Context:
-`docs/EVALUATION.md` — H1 (books audit screen shows the forgeable log, not the tamper-evident chain), #16
-(billable audit verify ignores the head it maintains; lost localStorage queue drops entries silently), #24
-(books stores Plaid/ACH/employee-bank secrets in plaintext, backups included), plus M7 (books data-store
-races) and M8 (GET endpoints mutate state). All money through `@elias/money`, all compliance events through
+**Next session → finish Phase 5's last item, then Phase 6 (epic #25, blocked on #19).** For the Phase 5 tail
+see "Remaining Phase 5 item" above. All money through `@elias/money`, all compliance events through
 `@elias/audit`.
 
 **Gotchas (carried forward + new):**
@@ -115,3 +146,11 @@ races) and M8 (GET endpoints mutate state). All money through `@elias/money`, al
   `client-billing.js` (the billed marker + client-export gate), `ledes.js`, `economics.js`. Extend those,
   not the `server.js` request handlers.
 - billable has no typecheck/lint in CI (plain JS, L1) — lean on the runtime tests (`node test/run.js`).
+- **books secrets-at-rest (#24):** the in-memory `db` is ALWAYS plaintext; encryption happens only in
+  `store.save`/`store.load` via `lib/secrets.js`. If you add a new secret field, add its path to
+  `applyToSecrets` — it is an enumerated allowlist on purpose. The key resolves from
+  `QUICKBUCKS_ENCRYPTION_KEY` (any passphrase) or a generated `data/.secret.key` (0600); tests use the keyfile
+  path (they `delete process.env.QUICKBUCKS_ENCRYPTION_KEY`). The keyfile is excluded from backups — keep it
+  that way, and keep new data files 0600.
+- **books audit UI reads the chain now (H1):** `/api/audit` returns `{ verified, entries }`, not an array.
+  `db.auditLog` is vestigial (still written by the dispatcher for back-compat) — nothing reads it anymore.

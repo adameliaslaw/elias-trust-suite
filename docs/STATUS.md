@@ -4,7 +4,15 @@
 > [HOMEWORK.md](HOMEWORK.md) for exactly where to start, then the epic issue for the phase.
 > Canonical plan: [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) · Findings narrative:
 > [EVALUATION.md](EVALUATION.md) · Backlog: GitHub Issues **#11–#27**.
-> Last updated: 2026-07-23 — Phase 4 (#23) complete (PR open): Matterproof billing redesign. AI runtime is
+> Last updated: 2026-07-23 — **Phase 5 (#24) in progress (PR open): data + audit hardening.** 7 of 8 checklist
+> items landed with reproducing tests: fail-closed iolta verify against the recorded head + surfaced offline
+> queue (#16); billable ledger reads the full last line so a >8 KB line no longer self-corrupts the chain (H2);
+> books `/api/audit` now serves the tamper-evident chain, not the forgeable `db.auditLog` (H1); books secrets
+> (Plaid/ACH/employee-bank) are AES-256-GCM encrypted at rest with the key kept out of backups + 0600 files
+> (#24); books GETs no longer mutate state and a tampered chain no longer 400s a read (M8); session cookies
+> gain `Secure` over TLS (L3); per-company mutation serialization (M7); LawPay `markRequested` idempotent on
+> retry. **Remaining:** the broad cross-app transactional-outbox + Clio external-side dedup (see HOMEWORK).
+> Prior: Phase 4 (#23) complete: Matterproof billing redesign. AI runtime is
 > cost/provenance metadata only — inferred attorney time defaults to **zero**; a billable minute exists only
 > once an attorney confirms human minutes (#17). Client exports are reviewed-only, mutually exclusive, and
 > idempotent — one `billed` marker, a second export is a no-op (#18). Rate is snapshotted at review (no
@@ -51,12 +59,19 @@ The previous STATUS asserted "480 checks green" and a sound audit/reconciliation
   `book − bank === difference` (was self-contradictory). Reproducing test added.
 - ✅ **FIXED (Phase 3)** — uploaded source statements are retained (content-hashed copy under
   `uploads/retained/`), not always deleted, so a finalized packet reproduces from the exact source.
-- ❌ **Audit verify ignores the head it maintains**; lost localStorage queue drops entries silently.
-  (#16, verified — Phase 5)
+- ✅ **FIXED (#16, Phase 5)** — iolta `verifyAuditChain` now reconciles the sealed entries against the
+  recorded CAS head (`auditMeta/{uid}`) and the offline queue: dropped tail entries, a rewound/missing head,
+  or any unflushed localStorage events fail closed (`verifyChainState` in `src/audit-chain.ts`). Reproducing
+  tests in `test/audit.test.ts`.
 - ✅ **FIXED (#15)** — firms→memberships→trust-accounts hierarchy; period doc IDs are account/uid-scoped
   (`{accountId}__{month}`), no hardcoded `iolta-trust`. Two firms/accounts coexist without collision
   (reproducing test). Rules written; deployment deferred (Phase 8 / #27).
-- ❌ **Books stores Plaid/ACH/employee-bank secrets in plaintext**, backups included. (#24 — Phase 5)
+- ✅ **FIXED (#24, Phase 5)** — books secrets (Plaid client secret + access tokens, firm/NJ ACH bank details,
+  employee direct-deposit routing/account) are AES-256-GCM encrypted at the store boundary (`lib/secrets.js`);
+  the in-memory db stays plaintext so callers are unchanged. Key from `QUICKBUCKS_ENCRYPTION_KEY` or a 0600
+  `data/.secret.key` **excluded from backups** (ciphertext-only tarballs); company files + global.json written
+  0600. Also H1 (`/api/audit` shows the tamper-evident chain), H2 (billable >8 KB line), M7 (per-company
+  mutation lock), M8 (GETs read-only), L3 (Secure cookie over TLS). Reproducing tests throughout.
 - ✅ **FIXED (#17, #18, Phase 4)** — Matterproof no longer invents attorney time. AI runtime is
   cost/provenance metadata only; billable `hours` default to zero and become non-zero solely when an
   attorney confirms human minutes (`entries.js`; `finishTask` records `suggestedHours`, `applyOverride`
@@ -81,7 +96,7 @@ The tests are valuable but largely do not cover these paths.
 | 2 — Rebuild IOLTA accounting model | #21 | ✅ Done — PR open (#11, #15 closed) |
 | 3 — Reconciliation lifecycle + retention | #22 | ✅ Done — PR open (#14 closed) |
 | 4 — Redesign Matterproof billing | #23 | ✅ Done — PR open (#17, #18 fixed) |
-| 5 — Data + audit hardening | #24 | ⬜ Next ← **START HERE (code)** (2–4 done) |
+| 5 — Data + audit hardening | #24 | 🟨 In progress — PR open (7/8 items; cross-app outbox/Clio dedup remains) |
 | 6 — Books role + `packages/rules` | #25 | ⬜ Blocked on 0 |
 | 7 — Suite integration + `packages/auth` | #26 | ⬜ Blocked on 2–6 |
 | 8 — Release engineering | #27 | ⬜ Parallelizable; finalize last |

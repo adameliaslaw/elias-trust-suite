@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { loadGlobal, saveGlobal, DATA_DIR } = require('./global');
 const { round2, mul, percentOf, sum, add, sub } = require('./money');
+const secrets = require('./secrets');
 
 const FILE_KEY = Symbol('dbFile');
 const dbs = new Map();   // companyId -> db object
@@ -80,7 +81,7 @@ function migrateLegacy() {
     delete db.settings.passwordHash;
   }
   g.companies.push({ id, name: (db.settings && db.settings.companyName) || 'My Company', createdAt: todayISO() });
-  fs.writeFileSync(companyFile(id), JSON.stringify(db, null, 2));
+  fs.writeFileSync(companyFile(id), JSON.stringify(secrets.sealForStorage(db), null, 2), { mode: 0o600 });
   fs.renameSync(legacy, legacy + '.migrated');
   saveGlobal();
 }
@@ -117,7 +118,7 @@ function load(companyId) {
   const file = companyFile(company.id);
   let db;
   if (fs.existsSync(file)) {
-    db = migrate(JSON.parse(fs.readFileSync(file, 'utf8')));
+    db = migrate(secrets.openFromStorage(JSON.parse(fs.readFileSync(file, 'utf8'))));
   } else {
     db = defaultData(company.name);
   }
@@ -131,8 +132,12 @@ function save(db) {
   const file = db[FILE_KEY];
   if (!file) throw new Error('save() needs a db object from load()');
   const tmp = file + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
+  // Secrets are encrypted on the way to disk; the in-memory db stays plaintext.
+  // 0600 so the file (and thus the encrypted-but-still-private books) is not
+  // world-readable on a shared host.
+  fs.writeFileSync(tmp, JSON.stringify(secrets.sealForStorage(db), null, 2), { mode: 0o600 });
   fs.renameSync(tmp, file);
+  try { fs.chmodSync(file, 0o600); } catch { /* platform without POSIX modes */ }
 }
 
 // ---- Derived invoice fields ----

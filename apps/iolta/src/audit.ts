@@ -21,11 +21,11 @@
  *    and entry timestamps record the true mutation time.
  */
 import {
-  collection, doc, getDocs, query, runTransaction, serverTimestamp, where,
+  collection, doc, getDoc, getDocs, query, runTransaction, serverTimestamp, where,
 } from 'firebase/firestore';
 import { db } from './firebase';
-import { buildNextEntry, verifyEntryDocs } from './audit-chain';
-import type { ChainVerification, EntryDoc, SealedEntry } from './audit-chain';
+import { buildNextEntry, verifyChainState } from './audit-chain';
+import type { ChainHead, ChainVerification, EntryDoc, SealedEntry } from './audit-chain';
 import type { AuditEventPayloads, AuditEventType } from '@elias/audit/core';
 
 const entryDocId = (uid: string, seq: number): string => `${uid}_${String(seq).padStart(12, '0')}`;
@@ -119,13 +119,27 @@ export async function flushAuditQueue(uid: string): Promise<number> {
 }
 
 /**
- * Verify-on-open: fetch every entry for this user and re-verify the whole
- * chain. Sorting client-side avoids a composite Firestore index.
+ * Verify-on-open: fetch every entry for this user, the recorded chain head,
+ * and the offline queue, then re-verify the whole state fail-closed (#16).
+ * Sorting client-side avoids a composite Firestore index.
+ *
+ * Beyond re-hashing the entries, this reconciles them against the CAS head
+ * (dropped tail entries / a rewound cursor are caught, not silently accepted
+ * as a shorter valid chain) and surfaces any unflushed offline events as a
+ * failure. See verifyChainState for the rationale.
  */
 export async function verifyAuditChain(uid: string): Promise<ChainVerification> {
-  const snap = await getDocs(query(collection(db, 'auditEntries'), where('uid', '==', uid)));
+  const [snap, headSnap] = await Promise.all([
+    getDocs(query(collection(db, 'auditEntries'), where('uid', '==', uid))),
+    getDoc(doc(db, 'auditMeta', uid)),
+  ]);
   const docs = snap.docs
     .map(d => d.data() as EntryDoc)
     .sort((a, b) => a.seq - b.seq);
-  return verifyEntryDocs(docs);
+  const raw = headSnap.exists() ? (headSnap.data() as { seq?: unknown; hash?: unknown }) : null;
+  const head: ChainHead | null =
+    raw && Number.isInteger(raw.seq) && typeof raw.hash === 'string'
+      ? { seq: raw.seq as number, hash: raw.hash }
+      : null;
+  return verifyChainState(docs, head, readQueue(uid).length);
 }

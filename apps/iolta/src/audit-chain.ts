@@ -48,8 +48,8 @@ export function buildNextEntry<T extends AuditEventType>(
 }
 
 export type ChainVerification =
-  | { ok: true; entries: number }
-  | { ok: false; entries: number; error: string; atSeq: number | null };
+  | { ok: true; entries: number; pending?: number }
+  | { ok: false; entries: number; error: string; atSeq: number | null; pending?: number };
 
 /** Fields a stored entry document must carry (a uid field may also be present;
  *  it is envelope, not part of the sealed body). */
@@ -88,6 +88,64 @@ export function verifyEntryDocs(docs: EntryDoc[]): ChainVerification {
     prevHash = e.hash;
   }
   return { ok: true, entries: docs.length };
+}
+
+/**
+ * Fail-closed verification of the WHOLE chain state, not just the entries in
+ * isolation: the sealed entries, the recorded head (the CAS cursor future
+ * appends extend), and the offline queue must ALL agree.
+ *
+ * Why the head matters (#16): verifyEntryDocs re-hashes whatever entries it is
+ * handed, so a chain whose tail entries were dropped still verifies "ok" as a
+ * shorter valid chain. The recorded head is the independent witness of how far
+ * the chain reached — if it disagrees with the visible tail, entries were
+ * removed out from under the cursor (or the cursor was rewound), and the log
+ * must fail rather than quietly report a truncated history as sound.
+ *
+ * Why the queue matters (#16): appendAuditEvent never throws — a mutation
+ * whose audit append fails (offline, rules undeployed) is queued in
+ * localStorage. Those are real audit records that never reached the chain, so
+ * a non-empty queue is a compliance gap, surfaced here as a failure instead of
+ * being dropped silently.
+ */
+export function verifyChainState(
+  docs: EntryDoc[],
+  head: ChainHead | null,
+  pendingCount = 0,
+): ChainVerification {
+  const base = verifyEntryDocs(docs);
+  if (!base.ok) return { ...base, pending: pendingCount };
+
+  const tail = docs.length ? (docs[docs.length - 1] as EntryDoc) : null;
+  if (!tail && head) {
+    return {
+      ok: false, entries: 0, pending: pendingCount,
+      error: `recorded head is at seq ${head.seq} but no entries exist (entries dropped)`,
+      atSeq: head.seq,
+    };
+  }
+  if (tail && !head) {
+    return {
+      ok: false, entries: docs.length, pending: pendingCount,
+      error: `${docs.length} entries exist but the chain head is missing (head lost)`,
+      atSeq: tail.seq,
+    };
+  }
+  if (tail && head && (head.seq !== tail.seq || head.hash !== tail.hash)) {
+    return {
+      ok: false, entries: docs.length, pending: pendingCount,
+      error: `recorded head (seq ${head.seq}) does not match the last entry (seq ${tail.seq}) — entries after the head are missing or the head was rewound`,
+      atSeq: tail.seq,
+    };
+  }
+  if (pendingCount > 0) {
+    return {
+      ok: false, entries: docs.length, pending: pendingCount,
+      error: `${pendingCount} audit event(s) recorded offline have not been written to the chain (unflushed queue)`,
+      atSeq: null,
+    };
+  }
+  return { ok: true, entries: docs.length, pending: 0 };
 }
 
 /**

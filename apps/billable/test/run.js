@@ -379,6 +379,18 @@ test('LawPay link: gated on review, amount in cents, marks entries billed', () =
   const auditEvents = store.readEvents().filter((e) => e.type === 'payment_request');
   assert.strictEqual(auditEvents.length, 1);
   assert.deepStrictEqual(auditEvents[0].entryIds, ['p1']);
+
+  // Idempotent on retry: re-marking the SAME request (e.g. a retry after the
+  // link was issued but the first call errored) must not append a second
+  // payment_request — else outstanding A/R would double-count the reference.
+  const retry = markRequested(req);
+  assert.strictEqual(retry.duplicate, true);
+  const afterRetry = store.readEvents().filter((e) => e.type === 'payment_request');
+  assert.strictEqual(afterRetry.length, 1, 'retry must not append a duplicate payment_request');
+  const { listRequests, outstanding } = require('../src/lawpay');
+  const reqs = listRequests(store.readEvents());
+  assert.strictEqual(reqs.filter((r) => r.reference === req.reference).length, 1);
+  assert.strictEqual(outstanding(reqs), req.amountCents, 'A/R must count the reference once, not twice');
   const rebuilt = buildEntries(store.readEvents(), config, store.readOverrides());
   assert.ok(!rebuilt.some((e) => e.session === 'unknown')); // audit event not billable
 

@@ -66,6 +66,15 @@ function releaseLock(targetFile, fd) {
   try { fs.unlinkSync(`${targetFile}.lock`); } catch { /* reclaimed already */ }
 }
 
+// Read the FULL last line, however large. A fixed 8 KB tail window
+// (the old implementation) truncated any final line bigger than 8 KB — e.g.
+// a lawpay.request_created bundling a few hundred entryIds — so parseLine
+// returned null, tailState reset seq to 0 with GENESIS prevHash, and
+// verifyLedger then reported tampering that never occurred (H2). Scan
+// backward in chunks, growing the window until the newline before the last
+// line is found (or the file start is reached), so the last record is always
+// captured whole.
+const TAIL_CHUNK = 8192;
 function readLastLine(file) {
   let fd;
   try {
@@ -75,11 +84,25 @@ function readLastLine(file) {
   }
   try {
     const size = fs.fstatSync(fd).size;
-    const chunk = Buffer.alloc(Math.min(size, 8192));
-    fs.readSync(fd, chunk, 0, chunk.length, Math.max(0, size - chunk.length));
-    const text = chunk.toString('utf8').replace(/\n+$/, '');
-    const idx = text.lastIndexOf('\n');
-    return idx === -1 ? text : text.slice(idx + 1);
+    if (size === 0) return null;
+    let pos = size;
+    let buf = Buffer.alloc(0);
+    while (pos > 0) {
+      const readLen = Math.min(TAIL_CHUNK, pos);
+      pos -= readLen;
+      const chunk = Buffer.alloc(readLen);
+      fs.readSync(fd, chunk, 0, readLen, pos);
+      buf = Buffer.concat([chunk, buf]);
+      // The buffer always includes the end of file, so trailing newlines are
+      // real. Any '\n' found now separates the last line from the one before
+      // it; slice after it — that region is fully buffered and decode-safe.
+      const text = buf.toString('utf8').replace(/\n+$/, '');
+      const idx = text.lastIndexOf('\n');
+      if (idx !== -1) return text.slice(idx + 1);
+    }
+    // Reached the start of file without an interior newline: the whole file
+    // is a single line.
+    return buf.toString('utf8').replace(/\n+$/, '');
   } finally {
     fs.closeSync(fd);
   }
