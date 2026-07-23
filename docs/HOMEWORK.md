@@ -41,61 +41,48 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 6 (epic #25) — **first PR** (the coherent money/tax-correctness slice). Branch
-`claude/phase6-rules-payroll-b9n748` off `main`; PR **open, referencing #25** (`Refs #25`, not `Fixes` — the
-epic has structural items left). **Auto-merge intentionally OFF** (money/tax-correctness — per CONTRIBUTING's
-exception) — human review requested. This PR does **not** close #25; it checks 5 of its 8 boxes.
+**Session that just ran:** Phase 6 (epic #25) — **PR 2**: the first slice of the `server.js` split. Branch
+`claude/phase6-server-split-0hil0o` off latest `main` (`361e900`); PR **open, referencing #25** (`Refs #25`,
+not `Fixes` — the epic still has structural items left). **Squash auto-merge ON** — this is a pure structural
+refactor fully covered by the 252-check smoke suite (NOT money/tax logic), so per CONTRIBUTING it may land on
+green CI without waiting on the owner. Checks no new #25 boxes on its own; the "split `server.js`" box stays
+open until the whole file is decomposed across follow-up PRs.
 
-**What landed this session (each with a reproducing test):**
-- **`packages/rules` (`@elias/rules`) — the moat, built.** Effective-date-keyed, version-parameterized rule
-  sets where every constant carries a primary-source citation. `src/rules.ts`: `cite()`/`Cited<T>`,
-  `materialize()` (strips citations → the plain values the engine consumes), `citedLeaves()`/`citationAt()`
-  for provenance, and a registry with `resolveByDate()`. `src/payroll.ts`: the full 2026 payroll/withholding
-  set (mirrors the old `tables2026.js` keys/values exactly, each leaf cited), plus the previously-absent IRC
-  **§402(g)** limit; `payrollValues(year)` returns the plain shape and throws for an unregistered year.
-  `src/nacha.ts`: ACH service-class codes cited to the NACHA rules. 13 vitest tests incl. a moat invariant
-  (every constant has a non-empty authority+locator).
-- **Payroll retrofit.** `apps/books/lib/payroll/engine.js` now sources params via `require('@elias/rules').payrollValues(year)`;
-  **`tables2026.js` deleted**. `test/payroll.test.js` + `test/tax1040.test.js` take `T` from
-  `payrollValues(2026)`. Unknown-year error message changed to `/No payroll rule set/` (smoke + payroll tests updated).
-- **Salestax snapshot (`lib/salestax.js:35`).** Editing a paid invoice no longer restates prior-period income
-  or the sales-tax **trust** liability: `taxSplitSnapshot(dInv)` freezes the invoice tax/total ratio onto each
-  payment at record time (all 3 push sites in `server.js`), and `paymentIncomeParts` reads `payment.taxSnapshot`
-  when present (legacy snapshot-less payments fall back to the live invoice).
-- **Payroll aggregate net guard + §402(g) (`engine.js`).** `deductionAmounts` caps elective 401(k)/Roth
-  deferrals by remaining annual §402(g) room (YTD via new `ytd.electiveDeferrals`, summed in
-  `service.js#ytdTotals`). `computePaycheck` now has an `evaluate()` closure + a guard loop that trims voluntary
-  deductions (after-tax → Roth → pre-tax 401k → health, re-evaluating taxes after a pre-tax trim) so **net can
-  never go negative** (a negative check was silently dropped from NACHA). New result fields: `electiveDeferral`,
-  `deductionsReduced`.
-- **NACHA credit-only 220 (`nacha.js`).** PPD payroll batch header + control now declare service class **220**
-  (credits only), not mixed **200**, single-sourced from `@elias/rules` `ACH_SERVICE_CLASS.CREDITS_ONLY`.
-- **Stale NIIT comment (`tax1040.js:13`).** Header said "no NIIT" while the module computes Form 8960 NIIT —
-  corrected.
+**Context — PR 1 is MERGED.** Phase 6 PR 1 (`@elias/rules` moat + payroll retrofit + four payroll/tax
+correctness fixes) landed as **PR #36**, squash-merged to `main` as **`361e900`**. #25 has **6/8 boxes**
+checked and stays OPEN for the two structural items (server split; schema migrations/roles/durable storage).
+The `@elias/rules` moat, the salestax snapshot, the payroll net guard + §402(g) cap, NACHA 220, and the NIIT
+comment fix are all on `main` now — see the closed-item history in STATUS.md.
 
-**Books' accounting role (checklist item) — settled by #19, no code.** D3=C already decided it: integrate with
-a real accounting system; do NOT build the missing double-entry layer (chart of accounts / journals / trial
-balance / A-P). Checked that box in #25 with a one-line note citing the #19 ratification; invoice/payment
-objects stay thin + integration-oriented.
+**What landed this session (behavior-preserving, covered by the existing smoke suite):**
+- **Began the incremental `server.js` split.** Extracted the **sales-tax + reporting** route group —
+  `GET /api/salestax`, `POST /api/salestax/remit`, `GET /api/dashboard`, `GET /api/reports/pnl`,
+  `GET /api/reports/aging` — verbatim into **`apps/books/lib/routes/reports.js`**, exported as
+  `(route, deps) => { route(...) }`. `server.js` requires it **in place** (same source location the handlers
+  had), so route-registration order is unchanged; the handlers close over an explicit `deps` object
+  (`sendJSON, readBody, badRequest, inRange, round2, uid, todayISO, decorateInvoice, commit, audit, salestax,
+  money`) instead of the monolith's module scope. `server.js` 2218 → 2092 lines.
+- **No logic change.** The `salestax.remitted` mutation still goes through `store.commit` (transactional
+  outbox); the reports still read income via `salestax.paymentIncomeParts` (honoring the payment tax snapshot)
+  and money math via `@elias/money`. The 252-check `smoke.test.js` suite is **identical before/after** and
+  still passes — it is the characterization safety net for this slice.
 
-**Design notes for the reviewer:**
-- `payrollValues(year)` is memoized and materializes to the **exact** old `tables2026` numeric shape, so all
-  existing payroll/filings/tax1040/nacha tests pass unchanged — the retrofit is provenance, not a value change.
-- §402(g) 2026 limit is set to **$24,500** with a citation note (IRC §402(g)(1); IRS Notice 2025-67) flagging
-  "verify before a live filing" — same honest posture as the 1040 planner. Catch-up (age 50+) is not modeled.
-- The net guard is a documented conservative behavior: trimming a *pre-tax* deferral raises taxable wages, so
-  `evaluate()` re-runs each iteration; it always converges (worst case all voluntary deductions zeroed →
-  net = gross − taxes + reimb ≥ 0). After-tax/Roth trims are exact (no tax effect).
+**The extraction pattern (follow it for the next group):**
+1. Create `apps/books/lib/routes/<group>.js` exporting `module.exports = function (route, deps) { const {...} = deps; route(method, pattern, handler); ... }`.
+2. Copy the handlers **verbatim** (don't "improve" them — this is a refactor). Identify every free variable
+   each handler used from `server.js` module scope and add it to the destructured `deps`.
+3. In `server.js`, replace the inline `route(...)` block with `require('./lib/routes/<group>')(route, { ...deps });`
+   **at the same location** so registration order is preserved (route order only matters for overlapping
+   patterns, but keeping it identical keeps the diff honest and the smoke net exact).
+4. `npm run typecheck` + `npm test --workspace apps/books` must stay green with the **same 252 count**.
 
-**State of the repo:** all suites green (`npm test` exit 0 across every workspace — books 252-suite incl.
-payroll 27 + salestax 10 + nacha 17, billable, iolta, audit 16, money 22, **rules 13**); `npm run typecheck`
-clean; `grep -c msh.team package-lock.json` = 0. Backlog: #24 CLOSED (P5); #16/#17/#18, #14, #11/#15,
-#12/#13/#20 closed; #19 ratified + closed.
-
-**Next session → remaining Phase 6 (#25) structural items (own PRs), then Phase 7:**
-- **Incrementally split the monolithic `apps/books/server.js` behind tests** (checklist item). It's ~2,200
-  lines of route handlers; extract cohesive route groups (invoices, payroll, salestax…) into modules with the
-  existing tests as the safety net. One PR per slice.
+**Next session → continue the split (own PRs, one cohesive group each), then the other structural item:**
+- **Next split slices.** Remaining route groups by handler count (see the `route(` map in `server.js`):
+  payroll 19, bank 17, household 8, invoices 7, expenses 7, time 6, recurring 4, customers 4, plus
+  auth/companies/settings and the audit/backup tail. Suggested order: another low-risk group (**invoices** or
+  **expenses**) next to lock the pattern in, then the big ones (**payroll**, **bank**). Watch for handlers
+  that reference module-level helpers you haven't passed yet (`scheduleRecurring`, `secureAttr`,
+  `PUBLIC_ROUTES`, the plaid/csv/receipts/deposits/nacha/filings requires) — thread them through `deps`.
 - **Schema migrations / roles / durable storage before any multi-user deploy** (checklist item). Books is a
   single-file JSON store today; design a migration/versioning story + role model. Gates multi-user.
 - **Migrate more domains into `@elias/rules`:** sales-tax rate + ST-50/51 calendar, LEDES units, the 1040
@@ -104,7 +91,12 @@ clean; `grep -c msh.team package-lock.json` = 0. Backlog: #24 CLOSED (P5); #16/#
 - **Phase 8 (#27)** stays parallelizable but "finalize last" (deploy-unblocking infra OK; not the integrated
   release cut).
 
-Phase 7 (#26) still needs 6. All money through `@elias/money`, all compliance events through `@elias/audit`.
+**State of the repo:** all suites green (`npm test` exit 0 across every workspace — books **252**-suite,
+billable, iolta, audit 16, money 22, rules 13); `npm run typecheck` clean; `grep -c msh.team package-lock.json`
+= 0. Backlog: #24 CLOSED (P5); #16/#17/#18, #14, #11/#15, #12/#13/#20 closed; #19 ratified + closed.
+
+Phase 7 (#26) still needs 6. All money through `@elias/money`, all compliance events through `@elias/audit`;
+new money mutations use `store.commit`/`commitMany`, never `save(db)` + `audit.append`.
 
 **Gotchas (carried forward + new):**
 - **NEW — `@elias/rules` build order:** `apps/books` now depends on the built `@elias/rules` `dist/`. books'
