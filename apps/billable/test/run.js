@@ -346,6 +346,118 @@ test('Clio push: only reviewed+mapped entries, correct payload, records clioId',
   assert.strictEqual(dry.results[0].dryRun, true);
 });
 
+// NOTE: billable's runner fires async tests without awaiting; their
+// continuations resume AFTER the whole synchronous sweep, by which time
+// phase4.test.js's freshHome() has repointed BILLABLE_HOME. So these tests
+// assert on the RETURNED results + the call sequence (home-independent) and
+// read the durable intent from the home captured synchronously at call time —
+// never via a post-await store read, which would see the shifted home.
+
+test('Clio push: a fresh push records a durable pre-POST intent (#24)', async () => {
+  const clio = require('../src/clio');
+  const HOME = process.env.BILLABLE_HOME; // the home this push writes into (sync portion)
+  const config = {
+    ...store.DEFAULT_CONFIG,
+    rate: 250,
+    clioMatters: { 'Delta|DEL-3': 606 },
+    clio: { accessToken: 'tok', refreshToken: 'r', expiresAt: Date.now() + 3600_000 },
+  };
+  const entry = {
+    id: 'rf0', date: '2026-07-19', client: 'Delta', matter: 'DEL-3',
+    description: 'Prepared filing.', hours: 0.5, amount: 125,
+    confirmed: true, reviewed: true, writeOff: false,
+  };
+  const calls = [];
+  const fetchImpl = async (url, opts) => {
+    calls.push(opts.method);
+    return { ok: true, json: async () => ({ data: { id: 6000 } }), text: async () => '' };
+  };
+  const { results } = await clio.pushEntries([entry], config, {}, { fetchImpl });
+  assert.deepStrictEqual(calls, ['POST'], 'no prior intent → straight to POST');
+  assert.strictEqual(results[0].clioId, 6000);
+  // The intent is written to the ledger BEFORE the POST (so a crash between
+  // them is recoverable). Read the file directly from the captured home.
+  const ledger = fs.readFileSync(path.join(HOME, 'ledger.jsonl'), 'utf8');
+  const intents = ledger.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    .filter((e) => e.type === 'clio.push_intent' && e.entryId === 'rf0');
+  assert.strictEqual(intents.length, 1, 'a durable pre-POST intent was recorded');
+});
+
+test('Clio push: a dangling intent reconciles instead of re-POSTing (#24)', async () => {
+  const clio = require('../src/clio');
+  const config = {
+    ...store.DEFAULT_CONFIG,
+    rate: 250,
+    clioMatters: { 'Beta|BETA-9': 555 },
+    clio: { accessToken: 'tok', refreshToken: 'r', expiresAt: Date.now() + 3600_000 },
+  };
+  const entry = {
+    id: 'rc1', date: '2026-07-20', client: 'Beta', matter: 'BETA-9',
+    description: 'Reviewed settlement.', hours: 0.5, amount: 125,
+    confirmed: true, reviewed: true, writeOff: false,
+  };
+  // Seed (synchronously, before the push) the exact on-disk state a crash
+  // leaves: the pre-POST intent is durable, the POST reached Clio (activity
+  // 7001 was created), but the process died before the clioId override.
+  store.appendClioIntent(clio.pushKey(entry, 555, config), 'rc1', 555);
+
+  // Retry: the dangling intent triggers a RECONCILE. Clio returns the activity
+  // from the crashed attempt; we adopt it and never POST again — a second POST
+  // would duplicate the Clio activity.
+  const calls = [];
+  const retryFetch = async (url, opts) => {
+    calls.push(opts.method);
+    if (opts.method === 'POST') throw new Error('must not re-POST on retry — would duplicate the Clio activity');
+    return {
+      ok: true,
+      json: async () => ({ data: [{ id: 7001, date: '2026-07-20', quantity: 1800, note: 'Reviewed settlement.', matter: { id: 555 } }] }),
+      text: async () => '',
+    };
+  };
+  const { results } = await clio.pushEntries([entry], config, {}, { fetchImpl: retryFetch });
+  assert.deepStrictEqual(calls, ['GET'], 'retry reconciles via GET only, never re-POSTs');
+  assert.strictEqual(results[0].clioId, 7001);
+  assert.strictEqual(results[0].reconciled, true);
+
+  // Once reconciled (clioId adopted), a further retry is a plain no-op that
+  // touches no API at all — the entry is billed.
+  const calls3 = [];
+  const r3 = await clio.pushEntries(
+    [entry], config, { rc1: { clioId: 7001 } },
+    { fetchImpl: async (u, o) => { calls3.push(o.method); throw new Error('no calls once pushed'); } }
+  );
+  assert.strictEqual(calls3.length, 0, 'already-pushed entry makes no API calls');
+  assert.strictEqual(r3.results.length, 0);
+});
+
+test('Clio push: a dangling intent whose POST never landed re-POSTs on retry (#24)', async () => {
+  const clio = require('../src/clio');
+  const config = {
+    ...store.DEFAULT_CONFIG,
+    rate: 250,
+    clioMatters: { 'Gamma|GAM-2': 888 },
+    clio: { accessToken: 'tok', refreshToken: 'r', expiresAt: Date.now() + 3600_000 },
+  };
+  const entry = {
+    id: 'rc2', date: '2026-07-21', client: 'Gamma', matter: 'GAM-2',
+    description: 'Filed brief.', hours: 0.4, amount: 100,
+    confirmed: true, reviewed: true, writeOff: false,
+  };
+  // Seed a dangling intent as if a prior POST failed outright (nothing created
+  // on Clio's side).
+  store.appendClioIntent(clio.pushKey(entry, 888, config), 'rc2', 888);
+
+  const calls = [];
+  const fetchImpl = async (url, opts) => {
+    calls.push(opts.method);
+    if (opts.method === 'POST') return { ok: true, json: async () => ({ data: { id: 8002 } }), text: async () => '' };
+    return { ok: true, json: async () => ({ data: [] }), text: async () => '' }; // reconcile finds nothing
+  };
+  const { results } = await clio.pushEntries([entry], config, {}, { fetchImpl });
+  assert.deepStrictEqual(calls, ['GET', 'POST'], 'reconcile finds nothing, then POSTs');
+  assert.strictEqual(results[0].clioId, 8002);
+});
+
 test('LawPay link: gated on review, amount in cents, marks entries billed', () => {
   const { buildPaymentRequest, markRequested } = require('../src/lawpay');
   const { buildEntries } = require('../src/entries');
