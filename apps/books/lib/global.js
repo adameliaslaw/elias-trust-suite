@@ -87,8 +87,10 @@ function loadGlobal() {
 
 function saveGlobal() {
   const tmp = GLOBAL_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(cache, null, 2));
+  // 0600: global.json holds the app password hash and the companies registry.
+  fs.writeFileSync(tmp, JSON.stringify(cache, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, GLOBAL_FILE);
+  try { fs.chmodSync(GLOBAL_FILE, 0o600); } catch { /* platform without POSIX modes */ }
 }
 
 module.exports = { loadGlobal, saveGlobal, taxProfileForYear, DATA_DIR };
