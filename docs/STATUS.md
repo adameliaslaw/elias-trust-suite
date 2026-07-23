@@ -4,8 +4,9 @@
 > [HOMEWORK.md](HOMEWORK.md) for exactly where to start, then the epic issue for the phase.
 > Canonical plan: [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) · Findings narrative:
 > [EVALUATION.md](EVALUATION.md) · Backlog: GitHub Issues **#11–#27**.
-> Last updated: 2026-07-23 — **Phase 5 (#24) ✅ done + MERGED (PR #34); Phase 0 (#19) ✅ ratified by owner
-> (D1=C, D2=B, D3=C split-by-domain, D4=B) → Phase 6 (#25) now unblocked.** Phase 5 = data + audit hardening; all 8 checklist
+> Last updated: 2026-07-23 — **Phase 6 (#25) 🟨 in progress — first PR open: `packages/rules` moat + payroll
+> retrofit + payroll/tax correctness fixes.** Phase 5 (#24) ✅ done + MERGED (PR #34); Phase 0 (#19) ✅ ratified
+> (D1=C, D2=B, D3=C split-by-domain, D4=B). Phase 5 = data + audit hardening; all 8 checklist
 > items landed with reproducing tests: fail-closed iolta verify against the recorded head + surfaced offline
 > queue (#16); billable ledger reads the full last line so a >8 KB line no longer self-corrupts the chain (H2);
 > books `/api/audit` now serves the tamper-evident chain, not the forgeable `db.auditLog` (H1); books secrets
@@ -113,7 +114,7 @@ The tests are valuable but largely do not cover these paths.
 | 3 — Reconciliation lifecycle + retention | #22 | ✅ Done (#14 closed) |
 | 4 — Redesign Matterproof billing | #23 | ✅ Done (#17, #18 fixed) |
 | 5 — Data + audit hardening | #24 | ✅ Done — PR #34 merged (8/8; Clio retry dedup + books transactional outbox) |
-| 6 — Books role + `packages/rules` | #25 | ⬜ **Unblocked** (Phase 0 ratified) — next engineering phase |
+| 6 — Books role + `packages/rules` | #25 | 🟨 **In progress** — PR 1 open: `@elias/rules` + payroll retrofit + tax fixes |
 | 7 — Suite integration + `packages/auth` | #26 | ⬜ Blocked on 2–6 (needs 6) |
 | 8 — Release engineering | #27 | ⬜ Parallelizable; finalize last |
 
@@ -122,6 +123,8 @@ The tests are valuable but largely do not cover these paths.
 - Repo scaffold (workspaces, tsconfig.base.json, CI on push/PR, repo public).
 - `packages/money` (`@elias/money`) — exact bigint-cents; no float; no equality epsilon. 22 tests.
 - `packages/audit` (`@elias/audit`) — hash-chained JSONL, pure-TS SHA-256, verify-on-open. 16 tests.
+- `packages/rules` (`@elias/rules`) — versioned, effective-date-keyed, **cited** rule sets (every constant
+  → its primary source); payroll retrofitted, engine consumes `payrollValues(year)`. 13 tests. (Phase 6 / #25)
 - `apps/books` ← quickbucks; `apps/iolta` ← IOLTA-Reconciliation; `apps/billable` ← Billable.ai —
   all migrated, money + audit wired at the calc layer.
 
@@ -138,8 +141,10 @@ The tests are valuable but largely do not cover these paths.
 
 ## Not yet built (planned packages)
 
-`packages/rules` (versioned, cited — Phase 6 / #25) · `packages/auth` (Phase 7 / #26) ·
-`packages/plaid` (deferred with bill-tracker migration).
+`packages/auth` (Phase 7 / #26) · `packages/plaid` (deferred with bill-tracker migration).
+`packages/rules` (`@elias/rules`) now **built** (Phase 6 / #25): versioned, effective-date-keyed, cited;
+payroll retrofitted. Remaining Phase 6 domains to migrate into it in later PRs: sales-tax rate + ST-50/51
+calendar, LEDES units, and the 1040 planner brackets.
 
 ## Verification environment notes
 

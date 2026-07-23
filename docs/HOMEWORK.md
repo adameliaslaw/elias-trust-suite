@@ -41,68 +41,91 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 5 (epic #24) — **finished the last item** (cross-app write-atomicity /
-idempotency). New PR opened off `main` (branch `claude/phase5-outbox-atomicity-8wf9g4`); **#24 is now fully
-checked and CLOSED**; Phase 5 marked ✅ done in STATUS. **Auto-merge is intentionally OFF** (money/security-
-adjacent: crash-atomicity + external-side dedup are not fully covered by CI semantics) — human review
-requested, per CONTRIBUTING's exception.
+**Session that just ran:** Phase 6 (epic #25) — **first PR** (the coherent money/tax-correctness slice). Branch
+`claude/phase6-rules-payroll-b9n748` off `main`; PR **open, referencing #25** (`Refs #25`, not `Fixes` — the
+epic has structural items left). **Auto-merge intentionally OFF** (money/tax-correctness — per CONTRIBUTING's
+exception) — human review requested. This PR does **not** close #25; it checks 5 of its 8 boxes.
 
 **What landed this session (each with a reproducing test):**
-- **Clio push retry dedup (`apps/billable/src/clio.js#pushEntries`).** A Clio `POST /activities` that
-  succeeded but died before `store.writeOverride({clioId})` would re-POST on retry and duplicate the Clio
-  activity. Now `pushEntries` records a durable, hash-chained **pre-POST intent** (`clio.push_intent` ledger
-  event via new `store.appendClioIntent`, mirroring LawPay's deterministic-reference dedup shape). On retry a
-  dangling intent triggers `reconcilePush` — a `GET /activities` query matching the intended
-  (matter, date, quantity, note) — that **adopts** the existing activity id instead of re-POSTing, POSTs only
-  when the prior attempt never landed, and **fails closed** on an ambiguous (>1) match. New exports:
-  `pushKey`, `reconcilePush`. Tests: 3 cases in `test/run.js` (`#24`).
-- **books save()+audit crash-atomicity — transactional outbox (`apps/books/lib/outbox.js`, new).** The owed
-  audit event now rides inside the atomically-saved company JSON (`db.outbox`), so it commits in the SAME
-  tmp+rename as the money mutation — no more silent-gap window between `save()` and `audit.append()`. A relay
-  (`outbox.flush`) delivers each owed event to the tamper-evident chain and clears it; boot-time
-  `outbox.recoverAll` redelivers anything a crash interrupted. Delivery is **idempotent** on the outbox
-  message id via new `audit.appendIdempotent` (carries `outboxId` in the payload; a replay after a crash
-  between append and clear is a no-op). `store.commit`/`commitMany` replaced the non-atomic
-  `save(db); await audit.append(...)` pattern in EVERY money handler (invoices, expenses, time, sales/bank
-  imports, payroll run/finalize/deposit, salestax, settings, recurring). Auth events and the best-effort
-  post-response `http.write` Layer A path (no company-JSON mutation) stay as plain `audit.append`. Tests:
-  `test/outbox.test.js` (4 cases, wired into `package.json`).
+- **`packages/rules` (`@elias/rules`) — the moat, built.** Effective-date-keyed, version-parameterized rule
+  sets where every constant carries a primary-source citation. `src/rules.ts`: `cite()`/`Cited<T>`,
+  `materialize()` (strips citations → the plain values the engine consumes), `citedLeaves()`/`citationAt()`
+  for provenance, and a registry with `resolveByDate()`. `src/payroll.ts`: the full 2026 payroll/withholding
+  set (mirrors the old `tables2026.js` keys/values exactly, each leaf cited), plus the previously-absent IRC
+  **§402(g)** limit; `payrollValues(year)` returns the plain shape and throws for an unregistered year.
+  `src/nacha.ts`: ACH service-class codes cited to the NACHA rules. 13 vitest tests incl. a moat invariant
+  (every constant has a non-empty authority+locator).
+- **Payroll retrofit.** `apps/books/lib/payroll/engine.js` now sources params via `require('@elias/rules').payrollValues(year)`;
+  **`tables2026.js` deleted**. `test/payroll.test.js` + `test/tax1040.test.js` take `T` from
+  `payrollValues(2026)`. Unknown-year error message changed to `/No payroll rule set/` (smoke + payroll tests updated).
+- **Salestax snapshot (`lib/salestax.js:35`).** Editing a paid invoice no longer restates prior-period income
+  or the sales-tax **trust** liability: `taxSplitSnapshot(dInv)` freezes the invoice tax/total ratio onto each
+  payment at record time (all 3 push sites in `server.js`), and `paymentIncomeParts` reads `payment.taxSnapshot`
+  when present (legacy snapshot-less payments fall back to the live invoice).
+- **Payroll aggregate net guard + §402(g) (`engine.js`).** `deductionAmounts` caps elective 401(k)/Roth
+  deferrals by remaining annual §402(g) room (YTD via new `ytd.electiveDeferrals`, summed in
+  `service.js#ytdTotals`). `computePaycheck` now has an `evaluate()` closure + a guard loop that trims voluntary
+  deductions (after-tax → Roth → pre-tax 401k → health, re-evaluating taxes after a pre-tax trim) so **net can
+  never go negative** (a negative check was silently dropped from NACHA). New result fields: `electiveDeferral`,
+  `deductionsReduced`.
+- **NACHA credit-only 220 (`nacha.js`).** PPD payroll batch header + control now declare service class **220**
+  (credits only), not mixed **200**, single-sourced from `@elias/rules` `ACH_SERVICE_CLASS.CREDITS_ONLY`.
+- **Stale NIIT comment (`tax1040.js:13`).** Header said "no NIIT" while the module computes Form 8960 NIIT —
+  corrected.
+
+**Books' accounting role (checklist item) — settled by #19, no code.** D3=C already decided it: integrate with
+a real accounting system; do NOT build the missing double-entry layer (chart of accounts / journals / trial
+balance / A-P). Checked that box in #25 with a one-line note citing the #19 ratification; invoice/payment
+objects stay thin + integration-oriented.
 
 **Design notes for the reviewer:**
-- The Clio reconcile is natural-key matching (no Clio-side idempotency field exists in v4), so it fails closed
-  on ambiguity rather than guessing — a money-safe posture. It sends no speculative idempotency header.
-- The books outbox rides *inside* the company JSON deliberately: that's what makes "mutation + owed audit
-  event" a single atomic write. `secrets.applyToSecrets` is an allowlist, so `db.outbox` passes through
-  sealing untouched (plaintext operational state, no secrets).
-- `outboxId` is additive audit-payload metadata (documented in `packages/audit/src/events.ts`); verify()
-  hashes the payload verbatim, so a payload with or without it verifies identically. books is plain JS (not
-  typechecked), so no interface edits were needed.
+- `payrollValues(year)` is memoized and materializes to the **exact** old `tables2026` numeric shape, so all
+  existing payroll/filings/tax1040/nacha tests pass unchanged — the retrofit is provenance, not a value change.
+- §402(g) 2026 limit is set to **$24,500** with a citation note (IRC §402(g)(1); IRS Notice 2025-67) flagging
+  "verify before a live filing" — same honest posture as the 1040 planner. Catch-up (age 50+) is not modeled.
+- The net guard is a documented conservative behavior: trimming a *pre-tax* deferral raises taxable wages, so
+  `evaluate()` re-runs each iteration; it always converges (worst case all voluntary deductions zeroed →
+  net = gross − taxes + reimb ≥ 0). After-tax/Roth trims are exact (no tax effect).
 
-**State of the repo:** all suites green (`npm test` exit 0 across every workspace — books 252 + audit 11 +
-outbox 4, billable 56, iolta 18 + 13, audit 16, money 22); `npm run typecheck` clean. Backlog: **#24 CLOSED**
-by this session; #16/#17/#18 (P4/5), #14 (P3), #11/#15 (P2), #12/#13/#20 (P1) closed. #19 unratified (gates
-Phases 6–7 only).
+**State of the repo:** all suites green (`npm test` exit 0 across every workspace — books 252-suite incl.
+payroll 27 + salestax 10 + nacha 17, billable, iolta, audit 16, money 22, **rules 13**); `npm run typecheck`
+clean; `grep -c msh.team package-lock.json` = 0. Backlog: #24 CLOSED (P5); #16/#17/#18, #14, #11/#15,
+#12/#13/#20 closed; #19 ratified + closed.
 
-**UPDATE (2026-07-23, same session): Phase 5 PR #34 MERGED, and Phase 0 (#19) RATIFIED by owner** —
-D1=C (internal-first, multi-tenant-capable), D2=B (hosting as-is), **D3=C (split by domain: suite owns
-trust/time/matters, integrates with a real general ledger for invoices/AR — NOT the firm's GL itself)**,
-D4=B (Payroll/Bills migrations paused). Recorded in CONSOLIDATION_PLAN.md (Product decisions) + STATUS.md;
-#19 closed. Phase 2's schema needed no change (already built on D3=C).
-
-**Next session → two unblocked options; pick per owner priority:**
-- **Phase 6 (#25) — Books role + `packages/rules`** — now UNBLOCKED (Phase 0 done). The versioned, cited
-  rule engine (every tax/compliance constant → its N.J.S.A./N.J.A.C./IRS source, parameterized by effective
-  date) is the estate suite's proven moat, and it resolves the Books↔Matterproof timekeeping overlap. Under
-  D3=C, Books stays the internal financial OS but is NOT positioned as the firm's authoritative general
-  ledger — trust/time/matters are first-class; invoice/payment objects stay thin + integration-oriented.
-- **Phase 8 (#27) — release engineering** — parallelizable; the app-level slice is safe now (iolta
-  `firebase deploy --only firestore:rules`; iolta's `xlsx`-from-CDN-tarball fragility; deploy/runtime config
-  PORT/env). **Caveat:** #27 is tagged "finalize last" — do the deploy-unblocking infra, but NOT the final
-  *integrated-suite* release cut, which should wait until Phase 7 lands.
+**Next session → remaining Phase 6 (#25) structural items (own PRs), then Phase 7:**
+- **Incrementally split the monolithic `apps/books/server.js` behind tests** (checklist item). It's ~2,200
+  lines of route handlers; extract cohesive route groups (invoices, payroll, salestax…) into modules with the
+  existing tests as the safety net. One PR per slice.
+- **Schema migrations / roles / durable storage before any multi-user deploy** (checklist item). Books is a
+  single-file JSON store today; design a migration/versioning story + role model. Gates multi-user.
+- **Migrate more domains into `@elias/rules`:** sales-tax rate + ST-50/51 calendar, LEDES units, the 1040
+  planner brackets — same cited pattern, so those constants stop being inline literals.
+- Then **Phase 7 (#26)** — suite integration + `packages/auth` (still needs 6).
+- **Phase 8 (#27)** stays parallelizable but "finalize last" (deploy-unblocking infra OK; not the integrated
+  release cut).
 
 Phase 7 (#26) still needs 6. All money through `@elias/money`, all compliance events through `@elias/audit`.
 
 **Gotchas (carried forward + new):**
+- **NEW — `@elias/rules` build order:** `apps/books` now depends on the built `@elias/rules` `dist/`. books'
+  `pretest` builds money + audit + **rules** (`--workspace @elias/rules`); if you run a books test file
+  directly (`node test/payroll.test.js`) after editing `packages/rules/src/*`, **rebuild rules first**
+  (`npm run build --workspace @elias/rules`) or you'll test stale dist. Root CI (`npm ci` → `typecheck` →
+  `test`) covers it because books' pretest fires. `dist/` is gitignored (don't commit it).
+- **NEW — payroll params come from `@elias/rules`:** `tables2026.js` is **gone**. Tax/withholding constants
+  live in `packages/rules/src/payroll.ts`, each cited; the engine reads them via `payrollValues(year)`
+  (memoized, materialized to the old plain shape). To add a tax year: add a cited `PayrollParams` for that
+  year and `registerPayroll` it — do NOT reintroduce a per-year JS table. Every leaf MUST carry a non-empty
+  `authority`+`locator` (a rules test enforces this). Adding/moving constants → update the citation.
+- **NEW — payroll net guard + §402(g):** `computePaycheck` never returns negative net (voluntary deductions
+  are trimmed after-tax→Roth→pre-tax-401k→health, re-evaluating taxes on a pre-tax trim). Elective deferrals
+  are §402(g)-capped using `ytd.electiveDeferrals` (summed in `service.js#ytdTotals` from
+  `dedPretax401k`+`dedRoth401k`). New result fields: `electiveDeferral`, `deductionsReduced`. If you add a
+  new deferral kind, add it to `ELECTIVE_DEFERRAL_KINDS` in `engine.js`.
+- **NEW — salestax snapshot:** new invoice payments carry `taxSnapshot` (the invoice tax/total ratio at
+  payment time); `salestax.paymentIncomeParts` reads it so a later invoice edit can't restate a booked
+  period. If you add another code path that pushes to `inv.payments`, attach `salestax.taxSplitSnapshot(dInv)`
+  (there are 3 sites in `server.js`). Legacy payments without a snapshot still use the live invoice.
 - **NEW — books transactional outbox:** money handlers now call `store.commit(db, companyId, type, payload)`
   (or `commitMany(db, companyId, [{type, payload}, ...])`) INSTEAD of `save(db); await audit.append(...)`.
   If you add a new money mutation, use `commit`, not the old pair — otherwise its audit event is not
