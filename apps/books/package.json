@@ -7,7 +7,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/money.test.js && node test/payroll.test.js && node test/tax1040.test.js && node test/nj1040.test.js && node test/schedule-elias.test.js && node test/elias-phase2.test.js && node test/nacha.test.js && node test/filings.test.js && node test/salestax.test.js && node test/recurring.test.js && node test/time.test.js && node test/timecards.test.js && node test/backup.test.js && node test/secrets.test.js && node test/audit.test.js && node test/outbox.test.js && node test/smoke.test.js",
+    "test": "node test/money.test.js && node test/payroll.test.js && node test/tax1040.test.js && node test/nj1040.test.js && node test/schedule-elias.test.js && node test/elias-phase2.test.js && node test/nacha.test.js && node test/filings.test.js && node test/salestax.test.js && node test/recurring.test.js && node test/time.test.js && node test/timecards.test.js && node test/backup.test.js && node test/secrets.test.js && node test/audit.test.js && node test/outbox.test.js && node test/migrations.test.js && node test/roles.test.js && node test/smoke.test.js",
     "pretest": "npm run build --workspace @elias/money --workspace @elias/audit --workspace @elias/rules --if-present"
   },
   "engines": {

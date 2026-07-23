@@ -121,6 +121,16 @@ require('./lib/routes/auth')(route, {
   commit, audit, auth, salestax
 });
 
+// -- principals (per-principal identity + roles, Phase 6 / #25) --
+// Owner-managed named principals (bookkeeper / read-only) layered on top of the
+// household-shared password (the implicit default owner). Owner-only by the
+// dispatcher's role gate (isOwnerOnly). Non-money: writes hit global.json via
+// saveGlobal() and append an auth-flavored principal.* event directly.
+require('./lib/routes/principals')(route, {
+  sendJSON, notFound, badRequest, readBody,
+  loadGlobal, saveGlobal, auth, audit, uid, todayISO
+});
+
 // -- customers --
 // Extracted verbatim into lib/routes/customers.js (Phase 6 / #25, third slice of
 // the server split), wired in place so route-registration order is unchanged.
@@ -348,6 +358,43 @@ require('./lib/routes/audit')(route, {
 // Routes reachable without a session (login flow itself).
 const PUBLIC_ROUTES = new Set(['/api/auth-status', '/api/login']);
 
+// -- roles (Phase 6 / #25) --
+// Three household roles resolved and enforced HERE in the dispatcher gate,
+// beside PUBLIC_ROUTES + the auth check — not in the handlers — so a role can
+// never reach a route it is denied. The household-shared password is the
+// implicit OWNER; named principals in global.json carry bookkeeper / read-only.
+//
+//   owner      — everything, including principal/role management + backup.
+//   bookkeeper — all day-to-day + money writes, but NOT owner-only routes.
+//   read-only  — GETs only (plus logout); every other mutation is denied.
+//
+// Owner-only routes: principal administration, the household-password endpoint,
+// and the full-data backup export (it dumps every company's secrets).
+function isOwnerOnly(pathname) {
+  return pathname === '/api/backup'
+    || pathname === '/api/password'
+    || pathname === '/api/principals'
+    || pathname.startsWith('/api/principals/');
+}
+
+function roleAllows(role, method, pathname) {
+  if (isOwnerOnly(pathname)) return role === 'owner';
+  if (role === 'read-only') return method === 'GET' || pathname === '/api/logout';
+  return true; // owner + bookkeeper: everything that is not owner-only
+}
+
+// Resolve the caller's role from a valid session + the household file. Returns
+// null when a session names a principal that no longer exists (deleted mid-
+// session) — the dispatcher then denies as if unauthenticated.
+function resolveRole(req, g) {
+  const sp = auth.sessionPrincipal(auth.parseCookies(req).qb_session);
+  if (!sp) return null;                                          // fail closed: no valid session -> deny
+  if (sp.username == null) return { role: 'owner', username: null }; // default owner = household password
+  const p = (g.principals || []).find(pr => pr.username === sp.username);
+  if (!p) return null;                                          // principal deleted mid-session -> deny
+  return { role: p.role, username: p.username };
+}
+
 // ---------- static files + dispatch ----------
 
 function serveStatic(req, res, pathname) {
@@ -410,6 +457,18 @@ async function handleRequest(req, res) {
     }
     if (g.passwordHash && !auth.authDisabled() && !isPublic && !auth.isAuthenticated(req)) {
       return sendJSON(res, 401, { error: 'Authentication required' });
+    }
+    // Role gate: once authenticated (and only when a password is set and auth is
+    // not disabled), resolve the caller's role and enforce it. Trusted-network
+    // mode (auth disabled) and the pre-password setup phase run as owner with no
+    // named principal, so actor strings and behavior are unchanged there.
+    if (g.passwordHash && !auth.authDisabled() && !isPublic) {
+      const resolved = resolveRole(req, g);
+      if (!resolved) return sendJSON(res, 401, { error: 'Authentication required' });
+      req.principal = { username: resolved.username, role: resolved.role };
+      if (!roleAllows(resolved.role, req.method, pathname)) {
+        return sendJSON(res, 403, { error: 'Forbidden: your role cannot perform this action', role: resolved.role });
+      }
     }
     for (const r of routes) {
       if (r.method !== req.method) continue;

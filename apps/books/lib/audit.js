@@ -88,12 +88,17 @@ function centsStr(dollarAmount) {
   return money.dollars(n).toCents().toString();
 }
 
-// books is a single-user app behind one password; the meaningful actor
-// distinction is WHERE the write came from.
+// Who-and-where for the audit trail. With roles (Phase 6 / #25) a request may
+// carry a named principal (req.principal, set by the dispatcher once it has
+// resolved the session's role): a bookkeeper 'jane' writing from 10.0.0.4
+// records `jane@10.0.0.4`. The DEFAULT OWNER (household-shared password, no
+// username) and trusted-network mode (auth disabled, no principal) keep the
+// original `local@<ip>` form, so every pre-roles actor string is unchanged.
 function actor(req) {
   const fwd = req.headers && req.headers['x-forwarded-for'];
   const ip = (typeof fwd === 'string' && fwd.split(',')[0].trim()) || req.socket?.remoteAddress || 'unknown';
-  return `local@${ip}`;
+  const who = (req.principal && req.principal.username) || 'local';
+  return `${who}@${ip}`;
 }
 
 // Test hook: drop cached logs (a fresh tmp DATA_DIR per test file).

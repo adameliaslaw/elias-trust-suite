@@ -27,10 +27,14 @@ function verifyPassword(password, stored) {
   return candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected);
 }
 
-function createSession() {
+// A session binds a token to a principal. `username` names a principal in
+// global.json (bookkeeper / read-only); null means the DEFAULT OWNER — the
+// household-shared password, which is the implicit owner and keeps the
+// pre-roles login working unchanged.
+function createSession(username) {
   const token = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
-  sessions.set(token, { createdAt: now, lastSeen: now });
+  sessions.set(token, { createdAt: now, lastSeen: now, username: username == null ? null : String(username) });
   return token;
 }
 
@@ -73,6 +77,16 @@ function parseCookies(req) {
 
 function isAuthenticated(req) {
   return sessionValid(parseCookies(req).qb_session);
+}
+
+// The principal descriptor for a valid session token, or undefined if the token
+// is missing/expired. `{ username: null }` is the default owner (household
+// password); `{ username: 'jane' }` is a named principal. The dispatcher pairs
+// this with global.json to resolve the caller's role.
+function sessionPrincipal(token) {
+  if (!sessionValid(token)) return undefined;
+  const s = sessions.get(token);
+  return { username: s.username == null ? null : s.username };
 }
 
 // Explicit opt-out for private/trusted deployments. Read per-request so the
@@ -119,7 +133,7 @@ function _reset() {
 
 module.exports = {
   hashPassword, verifyPassword, createSession, destroySession, clearSessions,
-  parseCookies, isAuthenticated, authDisabled,
+  parseCookies, isAuthenticated, sessionPrincipal, authDisabled,
   loginLockedMs, recordLoginFail, resetLoginFails,
   SESSION_IDLE_MS, SESSION_ABSOLUTE_MS, LOGIN_MAX_FAILS, LOGIN_LOCK_MS,
   _reset, _sessions: sessions

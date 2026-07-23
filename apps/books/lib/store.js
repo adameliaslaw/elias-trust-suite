@@ -7,6 +7,7 @@ const { loadGlobal, saveGlobal, DATA_DIR } = require('./global');
 const { round2, mul, percentOf, sum, add, sub } = require('./money');
 const secrets = require('./secrets');
 const outbox = require('./outbox');
+const migrations = require('./migrations');
 
 const FILE_KEY = Symbol('dbFile');
 const dbs = new Map();   // companyId -> db object
@@ -17,6 +18,9 @@ function uid() {
 
 function defaultData(companyName) {
   return {
+    // Current company schema version — a fresh install starts already-migrated
+    // (the migration runner is a no-op on it). See lib/migrations.js.
+    schemaVersion: migrations.COMPANY_SCHEMA_VERSION,
     settings: {
       companyName: companyName || 'My Company',
       currency: 'USD',
@@ -54,26 +58,6 @@ function companyFile(companyId) {
   return path.join(DATA_DIR, `company-${companyId}.json`);
 }
 
-function migrate(db) {
-  // Data files created before later features existed.
-  db.bankConnections = db.bankConnections || [];
-  db.bankTransactions = db.bankTransactions || [];
-  db.employees = db.employees || [];
-  db.payRuns = db.payRuns || [];
-  db.payrollDeposits = db.payrollDeposits || [];
-  db.salesTaxRemittances = db.salesTaxRemittances || [];
-  db.recurringInvoices = db.recurringInvoices || [];
-  db.bankRules = db.bankRules || [];
-  db.timeEntries = db.timeEntries || [];
-  db.vendors1099 = db.vendors1099 || [];
-  db.auditLog = db.auditLog || [];
-  db.outbox = db.outbox || [];
-  if (!db.expenseCategories.includes('Payroll Taxes')) {
-    db.expenseCategories.splice(db.expenseCategories.indexOf('Payroll') + 1, 0, 'Payroll Taxes');
-  }
-  return db;
-}
-
 // One-time migration from the single-company era: data/db.json becomes the
 // first registered company, and the app password moves to global.json.
 function migrateLegacy() {
@@ -86,6 +70,9 @@ function migrateLegacy() {
     g.passwordHash = db.settings.passwordHash;
     delete db.settings.passwordHash;
   }
+  // Bring the imported single-company file up to the current schema version
+  // before it is written as the first company file.
+  migrations.migrateCompany(db, id);
   g.companies.push({ id, name: (db.settings && db.settings.companyName) || 'My Company', createdAt: todayISO() });
   fs.writeFileSync(companyFile(id), JSON.stringify(secrets.sealForStorage(db), null, 2), { mode: 0o600 });
   fs.renameSync(legacy, legacy + '.migrated');
@@ -122,15 +109,20 @@ function load(companyId) {
   const company = list.find(c => c.id === companyId) || list[0];
   if (dbs.has(company.id)) return dbs.get(company.id);
   const file = companyFile(company.id);
-  let db;
+  let db, needWrite;
   if (fs.existsSync(file)) {
-    db = migrate(secrets.openFromStorage(JSON.parse(fs.readFileSync(file, 'utf8'))));
+    db = secrets.openFromStorage(JSON.parse(fs.readFileSync(file, 'utf8')));
+    // Run ordered forward migrations; if the file was upgraded, write it back
+    // atomically (save() does tmp+rename, 0600) so the upgrade is durable and
+    // the file never lingers at an old version.
+    needWrite = migrations.migrateCompany(db, company.id);
   } else {
     db = defaultData(company.name);
+    needWrite = true;
   }
   Object.defineProperty(db, FILE_KEY, { value: file });
   dbs.set(company.id, db);
-  if (!fs.existsSync(file)) save(db);
+  if (needWrite) save(db);
   return db;
 }
 

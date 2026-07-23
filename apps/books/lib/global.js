@@ -6,6 +6,7 @@ const path = require('path');
 const DATA_DIR = process.env.QUICKBUCKS_DATA_DIR || path.join(__dirname, '..', 'data');
 const GLOBAL_FILE = path.join(DATA_DIR, 'global.json');
 const { defaultScheduleElias } = require('./schedule-elias');
+const migrations = require('./migrations');
 
 let cache = null;
 
@@ -31,8 +32,11 @@ function defaultTaxProfile() {
 
 function defaultGlobal() {
   return {
+    // Current household schema version — a fresh install starts already-migrated.
+    schemaVersion: migrations.GLOBAL_SCHEMA_VERSION,
     companies: [],          // [{id, name, createdAt}]
-    passwordHash: null,
+    passwordHash: null,     // the household-shared password = the implicit OWNER
+    principals: [],         // named principals: [{id, username, name, role, passwordHash, createdAt}]
     taxProfiles: {},        // year -> profile (see defaultTaxProfile)
     scheduleElias: defaultScheduleElias()
   };
@@ -59,7 +63,12 @@ function loadGlobal() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (fs.existsSync(GLOBAL_FILE)) {
     const defaults = defaultGlobal();
-    cache = { ...defaults, ...JSON.parse(fs.readFileSync(GLOBAL_FILE, 'utf8')) };
+    const parsed = JSON.parse(fs.readFileSync(GLOBAL_FILE, 'utf8'));
+    cache = { ...defaults, ...parsed };
+    // Trust the FILE's stored schema version, not the default — otherwise the
+    // default's current version masks a legacy file's missing one and the
+    // migration runner never fires (and never writes the upgrade back).
+    cache.schemaVersion = parsed.schemaVersion;
     cache.taxProfiles = cache.taxProfiles || {};
     // Migrate the single-profile era: the old taxProfile becomes 2026's.
     if (cache.taxProfile) {
@@ -79,9 +88,14 @@ function loadGlobal() {
       seb: se.seb || {},
       properties: se.properties || []
     };
+    cache.principals = cache.principals || [];
   } else {
     cache = defaultGlobal();
   }
+  // Run ordered forward migrations (schemaVersion stamp + roles seeding). If the
+  // household file was upgraded, write it back atomically so the upgrade is
+  // durable. Runs once — subsequent loadGlobal() calls return the cache.
+  if (migrations.migrateGlobal(cache)) saveGlobal();
   return cache;
 }
 

@@ -50,11 +50,24 @@ module.exports = function registerAuthRoutes(route, deps) {
   route('GET', '/api/auth-status', (req, res) => {
     const g = loadGlobal();
     const setupRequired = !g.passwordHash && !auth.authDisabled();
-    sendJSON(res, 200, {
-      protected: !!g.passwordHash,
-      setupRequired,
-      authenticated: !setupRequired && (auth.authDisabled() || !g.passwordHash || auth.isAuthenticated(req))
-    });
+    const authenticated = !setupRequired && (auth.authDisabled() || !g.passwordHash || auth.isAuthenticated(req));
+    // Surface the caller's role so the UI can hide owner-only controls. Trusted
+    // mode / default owner = owner; a named principal resolves from global.json.
+    let role = null, username = null;
+    if (authenticated) {
+      if (auth.authDisabled() || !g.passwordHash) {
+        role = 'owner';
+      } else {
+        const sp = auth.sessionPrincipal(auth.parseCookies(req).qb_session);
+        if (sp && sp.username == null) {
+          role = 'owner';
+        } else if (sp) {
+          const p = (g.principals || []).find(x => x.username === sp.username);
+          if (p) { role = p.role; username = p.username; }
+        }
+      }
+    }
+    sendJSON(res, 200, { protected: !!g.passwordHash, setupRequired, authenticated, role, username });
   });
   route('POST', '/api/login', async (req, res) => {
     // Throttle brute-force attempts per client IP before doing any scrypt work.
@@ -65,19 +78,42 @@ module.exports = function registerAuthRoutes(route, deps) {
     }
     const b = await readBody(req);
     const g = loadGlobal();
+    const username = b.username != null ? String(b.username).trim() : '';
+    const setCookie = (token) =>
+      res.setHeader('Set-Cookie', `qb_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secureAttr(req)}`);
+    // login_failed shares one recorder so the throttle, the fail-loud audit
+    // entry, and the response stay in lockstep for both credential kinds.
+    const fail = async (principal) => {
+      auth.recordLoginFail(req);
+      // login is a public route, so req.principal is unset and actor() yields
+      // `local@<ip>`; slice past the `local@` prefix to record just the ip.
+      await audit.append(req.companyId, 'auth.login_failed', {
+        principal, reason: 'bad_password', ip: audit.actor(req).slice(6)
+      });
+    };
+
+    // A named principal (bookkeeper / read-only) logs in with username+password.
+    if (username) {
+      const p = (g.principals || []).find(x => x.username === username);
+      if (!p || !auth.verifyPassword(String(b.password || ''), p.passwordHash)) {
+        await fail(username);
+        return sendJSON(res, 401, { error: 'Incorrect username or password' });
+      }
+      auth.resetLoginFails(req);
+      setCookie(auth.createSession(p.username));
+      return sendJSON(res, 200, { ok: true, role: p.role, username: p.username });
+    }
+
+    // The default owner (household-shared password, no username) — the original
+    // pre-roles path, unchanged.
     if (!g.passwordHash) return badRequest(res, 'No password is set');
     if (!auth.verifyPassword(String(b.password || ''), g.passwordHash)) {
-      auth.recordLoginFail(req);
-      // Chained: brute-force bursts must be visible in the tamper-evident log.
-      await audit.append(req.companyId, 'auth.login_failed', {
-        principal: 'local', reason: 'bad_password', ip: audit.actor(req).slice(6)
-      });
+      await fail('local');
       return sendJSON(res, 401, { error: 'Incorrect password' });
     }
     auth.resetLoginFails(req);
-    const token = auth.createSession();
-    res.setHeader('Set-Cookie', `qb_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secureAttr(req)}`);
-    sendJSON(res, 200, { ok: true });
+    setCookie(auth.createSession());
+    sendJSON(res, 200, { ok: true, role: 'owner' });
   });
   route('POST', '/api/logout', (req, res) => {
     auth.destroySession(auth.parseCookies(req).qb_session);

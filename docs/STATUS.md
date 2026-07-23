@@ -4,20 +4,18 @@
 > [HOMEWORK.md](HOMEWORK.md) for exactly where to start, then the epic issue for the phase.
 > Canonical plan: [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) · Findings narrative:
 > [EVALUATION.md](EVALUATION.md) · Backlog: GitHub Issues **#11–#27**.
-> Last updated: 2026-07-23 (later) — **Phase 6 (#25) 🟨 in progress — PR 1 MERGED (#36, squashed to `main` as
-> `361e900`): `packages/rules` moat + payroll retrofit + payroll/tax correctness fixes (6/8 boxes). PR 2 MERGED
-> (#37, `298d948`): began the `server.js` split — sales-tax + reports route group extracted behind the
-> 252-check smoke suite. PR 3 MERGED (#38, `cdcd631`): expenses route group extracted (same pattern). PR 4 MERGED
-> (#39, `ca7219c`): customers route group extracted (4 handlers). PR 5 MERGED (#40, `635db72`): time route group
-> extracted (6 handlers). PR 6 MERGED (#41, `b04f01e`): recurring route group extracted (4 handlers). PR 7 MERGED
-> (#42, `1b3e33b`): household route group extracted (8 handlers). PR 8 MERGED (#43, `2886521`): payroll route
-> group extracted (19 handlers). PR 9 MERGED (#44, `1f348f1`): bank feed route group extracted (17 handlers,
-> `server.js` 1081 → 777 lines). PR 10 MERGED (#45, `40a8dee`): invoices route group extracted — the last big
-> domain group (8 handlers incl. sales-import, `server.js` 777 → 629 lines). PR 11 open (#46): extract the last
-> two inline clusters — auth/companies/settings (10 handlers) into `lib/routes/auth.js` + audit/backup tail (3
-> read-only GETs) into `lib/routes/audit.js` — which FINISHES the "split `server.js`" box (`server.js` 629 → 493
-> lines; all 11 route groups now in `lib/routes/*`). One structural box left: schema migrations/roles/durable
-> storage.**
+> Last updated: 2026-07-24 — **Phase 6 (#25) 🟨 in progress. Server-split box DONE. PR 11 MERGED (#46, squashed to
+> `main` as `05e69cf`): extracted the last two inline clusters — auth/companies/settings (10 handlers) into
+> `lib/routes/auth.js` + audit/backup tail (3 read-only GETs) into `lib/routes/audit.js` — FINISHING the "split
+> `server.js`" box (`server.js` 629 → 493 lines; all 11 route groups now in `lib/routes/*`). PR 12 open (this
+> session): the last structural box, part 1 — schema-version + migration runner (`lib/migrations.js`: every store
+> file carries `schemaVersion`, ordered forward migrations run + atomic write-back on load) AND the 3-role
+> household identity model (owner / bookkeeper / read-only; the shared password is the implicit default owner,
+> named principals in `global.json`, enforced in the dispatcher auth gate, surfaced through `audit.actor`).
+> Durable storage is the ONE remaining sub-item: owner ratified SQLite as the direction, delivered as its own
+> next human-reviewed PR (JSON stays for now). Earlier Phase-6 PRs (all MERGED): PR 1 (#36, `361e900`)
+> `packages/rules` moat + payroll retrofit + tax fixes; PR 2–10 (#37–#45) the incremental server split
+> (sales-tax/reports, expenses, customers, time, recurring, household, payroll, bank, invoices route groups).**
 > Phase 5 (#24) ✅ done + MERGED (PR #34); Phase 0 (#19) ✅ ratified
 > (D1=C, D2=B, D3=C split-by-domain, D4=B). Phase 5 = data + audit hardening; all 8 checklist
 > items landed with reproducing tests: fail-closed iolta verify against the recorded head + surfaced offline
@@ -127,7 +125,7 @@ The tests are valuable but largely do not cover these paths.
 | 3 — Reconciliation lifecycle + retention | #22 | ✅ Done (#14 closed) |
 | 4 — Redesign Matterproof billing | #23 | ✅ Done (#17, #18 fixed) |
 | 5 — Data + audit hardening | #24 | ✅ Done — PR #34 merged (8/8; Clio retry dedup + books transactional outbox) |
-| 6 — Books role + `packages/rules` | #25 | 🟨 **In progress** — PR 1 MERGED (#36): `@elias/rules` + payroll retrofit + tax fixes (6/8). PR 2 MERGED (#37): `server.js` split begun (sales-tax + reports group). PR 3 MERGED (#38): expenses group. PR 4 MERGED (#39): customers group. PR 5 MERGED (#40): time group. PR 6 MERGED (#41): recurring group. PR 7 MERGED (#42): household group. PR 8 MERGED (#43): payroll group. PR 9 MERGED (#44, `1f348f1`): bank group. PR 10 MERGED (#45, `40a8dee`): invoices group. PR 11 open (#46): auth/companies/settings + audit/backup tail — **finishes the server.js split** (all 11 groups extracted; `server.js` 493 lines) |
+| 6 — Books role + `packages/rules` | #25 | 🟨 **In progress** — PR 1 MERGED (#36): `@elias/rules` + payroll retrofit + tax fixes (6/8). PR 2–10 MERGED (#37–#45): incremental `server.js` split (sales-tax/reports, expenses, customers, time, recurring, household, payroll, bank, invoices). PR 11 MERGED (#46, `05e69cf`): auth/companies/settings + audit/backup tail — **server-split box DONE** (all 11 groups in `lib/routes/*`; `server.js` 493 lines). PR 12 open (this session): schema-version + migration runner (`lib/migrations.js`) + 3-role household identity (owner/bookkeeper/read-only). **Last box remaining: durable storage — owner ratified SQLite, its own next human-reviewed PR.** |
 | 7 — Suite integration + `packages/auth` | #26 | ⬜ Blocked on 2–6 (needs 6) |
 | 8 — Release engineering | #27 | ⬜ Parallelizable; finalize last |
 
@@ -140,6 +138,13 @@ The tests are valuable but largely do not cover these paths.
   → its primary source); payroll retrofitted, engine consumes `payrollValues(year)`. 13 tests. (Phase 6 / #25)
 - `apps/books` ← quickbucks; `apps/iolta` ← IOLTA-Reconciliation; `apps/billable` ← Billable.ai —
   all migrated, money + audit wired at the calc layer.
+- books schema-version + migration runner (`apps/books/lib/migrations.js`, Phase 6 / #25): every store file
+  carries a `schemaVersion`; ordered forward migrations run on load, idempotent + logged + never-lossy, with
+  atomic write-back. Round-trip tested (`test/migrations.test.js`, 19 checks).
+- books 3-role household identity (Phase 6 / #25): owner / bookkeeper / read-only. Shared password = implicit
+  default owner; named principals in `global.json` (seeded empty by global schema migration v2); enforced in the
+  dispatcher auth gate; actor surfaced through `audit.actor`. Role-enforcement tested (`test/roles.test.js`,
+  30 checks).
 
 ## Blocked on owner
 
@@ -154,10 +159,18 @@ The tests are valuable but largely do not cover these paths.
 
 ## Not yet built (planned packages)
 
-`packages/auth` (Phase 7 / #26) · `packages/plaid` (deferred with bill-tracker migration).
+`packages/auth` (Phase 7 / #26) — the natural home for the per-principal identity + role work Phase 6 starts
+(the 3-role model landed in books first, enforced in its dispatcher). · `packages/plaid` (deferred with
+bill-tracker migration).
 `packages/rules` (`@elias/rules`) now **built** (Phase 6 / #25): versioned, effective-date-keyed, cited;
 payroll retrofitted. Remaining Phase 6 domains to migrate into it in later PRs: sales-tax rate + ST-50/51
 calendar, LEDES units, and the 1040 planner brackets.
+
+**Books durable-storage direction (Phase 6 / #25):** owner ratified **SQLite** as the eventual store, delivered
+as its own **human-reviewed** PR (the change re-touches the #24 secrets-at-rest + transactional-outbox atomicity,
+which are built around whole-file JSON writes). JSON-per-company stays for now; the schema-version + migration
+runner (`lib/migrations.js`) is engine-agnostic and carries into SQLite. Done now while there is no real data
+(cheapest time to switch). This is the last unchecked sub-item of the migrations/roles/durable-storage box.
 
 ## Verification environment notes
 
