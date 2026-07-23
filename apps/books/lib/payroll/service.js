@@ -89,7 +89,7 @@ function validateEmployee(emp) {
 // same calendar year (excluding the run being computed) plus any opening
 // balances entered for a mid-year migration.
 function ytdTotals(db, employeeId, year, excludeRunId) {
-  const t = { ssWages: 0, medicareWages: 0, futaWages: 0, njUiWages: 0, njTdiWages: 0 };
+  const t = { ssWages: 0, medicareWages: 0, futaWages: 0, njUiWages: 0, njTdiWages: 0, electiveDeferrals: 0 };
   const emp = db.employees.find(e => e.id === employeeId);
   if (emp && emp.ytdOpening && emp.ytdOpening.year === year) {
     t.ssWages += emp.ytdOpening.ssWages;
@@ -97,6 +97,7 @@ function ytdTotals(db, employeeId, year, excludeRunId) {
     t.futaWages += emp.ytdOpening.futaWages;
     t.njUiWages += emp.ytdOpening.njUiWages;
     t.njTdiWages += emp.ytdOpening.njTdiWages;
+    t.electiveDeferrals += emp.ytdOpening.electiveDeferrals || 0;
   }
   for (const run of db.payRuns) {
     if (run.status !== 'finalized' || run.id === excludeRunId) continue;
@@ -108,6 +109,9 @@ function ytdTotals(db, employeeId, year, excludeRunId) {
       t.futaWages = money.add(t.futaWages, chk.computed.futaTaxable);
       t.njUiWages = money.add(t.njUiWages, chk.computed.njUiTaxable);
       t.njTdiWages = money.add(t.njTdiWages, chk.computed.njTdiTaxable);
+      // Sum this year's elective 401(k)/Roth deferrals for the §402(g) cap.
+      t.electiveDeferrals = money.add(t.electiveDeferrals,
+        chk.computed.dedPretax401k || 0, chk.computed.dedRoth401k || 0);
     }
   }
   return t;

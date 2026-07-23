@@ -3,7 +3,9 @@
 // wage base, NJ-WT tables, and NJ DOL rates. If the JS port ever drifts from
 // the Python engine, these fail.
 const assert = require('assert');
-const T = require('../lib/payroll/tables2026');
+// Tax parameters come from the cited @elias/rules rule set (via the engine),
+// not a hardcoded per-year table file.
+const T = require('@elias/rules').payrollValues(2026);
 const E = require('../lib/payroll/engine');
 
 let passed = 0;
@@ -200,8 +202,45 @@ check('reimbursement not taxed', () => {
   assert.strictEqual(withReimb.net, E.cents(plain.net + 150));
 });
 
+check('aggregate net guard: deductions can never drive net pay negative', () => {
+  // A tiny check ($200) with a large fixed after-tax deduction ($300). The
+  // per-deduction cap alone (min with gross) leaves a $200 withholding that
+  // exceeds take-home pay after taxes — net would go negative.
+  const emp = employee({ payType: 'hourly', annualSalary: null, hourlyRate: 20, payFrequency: 'weekly' });
+  const ded = [{ name: 'Garnishment', kind: 'aftertax', amountType: 'fixed', amount: 300 }];
+  const chk = E.computePaycheck(2026, emp, { hours: 10 }, ded, ytd(), SETTINGS);
+  assert.strictEqual(chk.gross, 200.00);
+  assert.ok(chk.employeeTaxes > 0);
+  // Net is floored at zero, never negative, and the check still balances.
+  assert.ok(chk.net >= 0, `net should not be negative, got ${chk.net}`);
+  assert.strictEqual(chk.net, E.cents(chk.gross - chk.employeeTaxes - chk.totalDeductions + chk.reimbursement));
+  assert.strictEqual(chk.deductionsReduced, true);
+  // Only what was left after mandatory taxes could be withheld.
+  assert.strictEqual(chk.totalDeductions, E.cents(chk.gross - chk.employeeTaxes));
+  assert.ok(chk.totalDeductions < 300);
+});
+
+check('IRC §402(g): elective deferral is capped by remaining annual room', () => {
+  // $24,000 already deferred this year; the annual limit is $24,500 → only
+  // $500 more may be deferred, even though $2,000 was elected on a $4,000 check.
+  const ded = [{ name: '401(k)', kind: 'pretax_401k', amountType: 'fixed', amount: 2000 }];
+  const chk = E.computePaycheck(2026, employee(), {}, ded, ytd({ electiveDeferrals: 24000 }), SETTINGS);
+  assert.strictEqual(chk.dedPretax401k, 500.00);
+  assert.strictEqual(chk.electiveDeferral, 500.00);
+  // With the deferral capped, taxable wages reflect only the $500 deferred.
+  assert.strictEqual(chk.fitWages, 3500.00);
+  assert.strictEqual(chk.net, E.cents(chk.gross - chk.employeeTaxes - chk.totalDeductions));
+});
+
+check('IRC §402(g): no room left means no deferral', () => {
+  const ded = [{ name: '401(k)', kind: 'pretax_401k', amountType: 'percent', amount: 5 }];
+  const chk = E.computePaycheck(2026, employee(), {}, ded, ytd({ electiveDeferrals: 24500 }), SETTINGS);
+  assert.strictEqual(chk.dedPretax401k, 0);
+  assert.strictEqual(chk.fitWages, 4000.00);   // nothing deferred, full wages taxable
+});
+
 check('unknown year throws', () => {
-  assert.throws(() => E.computePaycheck(2031, employee(), {}, [], ytd(), SETTINGS), /No tax tables/);
+  assert.throws(() => E.computePaycheck(2031, employee(), {}, [], ytd(), SETTINGS), /No payroll rule set/);
 });
 
 console.log(`\nAll ${passed} payroll engine checks passed.`);

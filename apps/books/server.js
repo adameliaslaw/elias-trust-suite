@@ -431,9 +431,15 @@ route('POST', '/api/invoices/:id/payments', async (req, res, db, params) => {
   const b = await readBody(req);
   const amount = Number(b.amount);
   if (!(amount > 0)) return badRequest(res, 'Payment amount must be positive');
-  const balance = decorateInvoice(inv).balance;
+  const dInv = decorateInvoice(inv);
+  const balance = dInv.balance;
   if (amount > balance + 0.005) return badRequest(res, `Payment exceeds remaining balance ($${balance.toFixed(2)})`);
-  inv.payments.push({ id: uid(), date: b.date || todayISO(), amount: round2(amount), method: b.method || 'Other' });
+  inv.payments.push({
+    id: uid(), date: b.date || todayISO(), amount: round2(amount), method: b.method || 'Other',
+    // Freeze the income/tax split against the invoice as it stands right now,
+    // so a later edit can't restate this period's income or trust liability.
+    taxSnapshot: salestax.taxSplitSnapshot(dInv)
+  });
   inv.draft = false;
   await commit(db, req.companyId, 'invoice.payment_recorded', {
     invoiceId: inv.id, paymentCents: audit.centsStr(amount), actor: audit.actor(req)
@@ -498,8 +504,12 @@ route('POST', '/api/sales/import-csv', async (req, res, db) => {
       continue;
     }
     inv.importKey = key;
-    const total = decorateInvoice(inv).total;
-    inv.payments.push({ id: uid(), date: day.date, amount: total, method: 'Card' });
+    const dImport = decorateInvoice(inv);
+    const total = dImport.total;
+    inv.payments.push({
+      id: uid(), date: day.date, amount: total, method: 'Card',
+      taxSnapshot: salestax.taxSplitSnapshot(dImport)
+    });
     inv.draft = false;
     existing.add(key);
     imported++;
@@ -1060,11 +1070,15 @@ route('POST', '/api/bank/transactions/:id/match', async (req, res, db, params) =
   const b = await readBody(req);
   const inv = db.invoices.find(x => x.id === b.invoiceId);
   if (!inv) return badRequest(res, 'A valid invoice is required');
-  const balance = decorateInvoice(inv).balance;
+  const dMatch = decorateInvoice(inv);
+  const balance = dMatch.balance;
   if (t.amount > balance + 0.005) {
     return badRequest(res, `Deposit (${t.amount.toFixed(2)}) exceeds the invoice balance (${balance.toFixed(2)})`);
   }
-  inv.payments.push({ id: uid(), date: t.date, amount: round2(t.amount), method: 'Bank transfer' });
+  inv.payments.push({
+    id: uid(), date: t.date, amount: round2(t.amount), method: 'Bank transfer',
+    taxSnapshot: salestax.taxSplitSnapshot(dMatch)
+  });
   inv.draft = false;
   t.status = 'matched';
   t.linkedInvoiceId = inv.id;

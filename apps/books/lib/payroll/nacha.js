@@ -50,6 +50,12 @@ function num(value, width) {
 // @elias/money, never a float x100.
 const money = require('../money');
 
+// ACH Service Class Codes come from the cited @elias/rules rule set (NACHA
+// Operating Rules & Guidelines, Appendix Three) — a payroll direct-deposit
+// batch is credits-only (220), a CCD+ tax payment is also credits-only (220).
+const { ACH_SERVICE_CLASS } = require('@elias/rules');
+const SERVICE_CREDITS_ONLY = ACH_SERVICE_CLASS.CREDITS_ONLY.value;   // '220'
+
 function amountCents(amount) {
   return money.centsInt(amount);
 }
@@ -139,7 +145,7 @@ function buildTaxPaymentFile(company, payment, fileDate, effectiveDate, fileIdMo
 
   const companyId = '1' + num(company.ein, 9);
   lines.push(
-    '5220' + alpha(company.name, 16) + alpha('', 20) + companyId +
+    '5' + SERVICE_CREDITS_ONLY + alpha(company.name, 16) + alpha('', 20) + companyId +
     'CCD' + alpha(payment.description || 'TAXPAYMENT', 10) +
     nowDate + eff + '   ' + '1' + odfi8 + num(1, 7));
 
@@ -154,7 +160,7 @@ function buildTaxPaymentFile(company, payment, fileDate, effectiveDate, fileIdMo
 
   const entryHash = Number(routing.slice(0, 8));
   lines.push(
-    '8220' + num(2, 6) + num(entryHash % 1e10, 10) +
+    '8' + SERVICE_CREDITS_ONLY + num(2, 6) + num(entryHash % 1e10, 10) +
     num(0, 12) + num(amount, 12) + companyId +
     alpha('', 19) + alpha('', 6) + odfi8 + num(1, 7));
 
@@ -184,8 +190,12 @@ function buildPpdFile(company, entries, fileDate, effectiveDate, fileIdModifier 
   lines.push(fileHeaderLine(company, nowDate, nowTime, fileIdModifier));
 
   const companyId = '1' + num(company.ein, 9);
+  // Service class 220 = ACH credits only (direct-deposit payroll is entirely
+  // credits to employees). Using 200 (mixed debits + credits) misdeclares the
+  // batch to the ODFI/ACH operator. NACHA Operating Rules & Guidelines,
+  // Appendix Three, Company/Batch Header Record, field 2 (Service Class Code).
   lines.push(
-    '5200' + alpha(company.name, 16) + alpha('', 20) + companyId +
+    '5' + SERVICE_CREDITS_ONLY + alpha(company.name, 16) + alpha('', 20) + companyId +
     'PPD' + alpha('PAYROLL', 10) + nowDate + eff + '   ' + '1' + odfi8 + num(1, 7));
 
   let entryHash = 0;
@@ -202,8 +212,9 @@ function buildPpdFile(company, entries, fileDate, effectiveDate, fileIdModifier 
       alpha(e.name, 22) + '  ' + '0' + odfi8 + num(i + 1, 7));
   });
 
+  // Batch control service class must match the batch header (220, credits only).
   lines.push(
-    '8200' + num(entries.length, 6) + num(entryHash % 1e10, 10) +
+    '8' + SERVICE_CREDITS_ONLY + num(entries.length, 6) + num(entryHash % 1e10, 10) +
     num(0, 12) + num(totalCredit, 12) + companyId +
     alpha('', 19) + alpha('', 6) + odfi8 + num(1, 7));
 

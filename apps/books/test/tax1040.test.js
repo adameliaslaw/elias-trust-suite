@@ -1,12 +1,14 @@
 // 1040 estimator tests.
 //
 // The first block re-derives the 2026 taxable-income brackets and standard
-// deductions from the Pub 15-T withholding schedules in tables2026.js:
+// deductions from the Pub 15-T withholding schedules in the cited @elias/rules
+// payroll set (payrollValues(2026)):
 // bracket floor = standard-schedule floor − first nonzero floor, and
 // standard deduction = W-4 adjustment + first nonzero floor. If the 1040
 // tables ever disagree with the (sourced) withholding tables, this fails.
 const assert = require('assert');
-const T = require('../lib/payroll/tables2026');
+// Pub 15-T 2026 withholding schedules come from the cited @elias/rules set.
+const T = require('@elias/rules').payrollValues(2026);
 const X = require('../lib/tax1040');
 
 let passed = 0;

@@ -2,16 +2,18 @@
 // advice or a filing engine.
 //
 // The taxable-income brackets and standard deductions below are derived from
-// the 2026 IRS Pub 15-T withholding schedules in lib/payroll/tables2026.js
-// (which are themselves sourced). Pub 15-T's "Step 2 checkbox" schedule for a
+// the 2026 IRS Pub 15-T withholding schedules in the cited @elias/rules payroll
+// rule set (packages/rules/src/payroll.ts). Pub 15-T's "Step 2 checkbox" schedule for a
 // status is exactly the real bracket schedule at half scale offset by half
 // the standard deduction, and the standard schedule embeds the full standard
 // deduction less the Worksheet 1A adjustment — test/tax1040.test.js re-derives
 // these numbers from the withholding tables and fails if they ever disagree.
 //
 // Simplifications (documented in the UI): ordinary income only (no capital
-// gains rates), no AMT, no NIIT, credits entered as a single number, and the
-// QBI wage/UBIA limitation uses only the 50%-of-W-2-wages test.
+// gains rates), no AMT, credits entered as a single number, and the QBI
+// wage/UBIA limitation uses only the 50%-of-W-2-wages test. The Form 8960 Net
+// Investment Income Tax (NIIT) on rental income IS computed (see NIIT_RATE and
+// the Form 8960 block below).
 
 // Half-up cent rounding with float-noise snapping, same as the payroll engine.
 const { cents: round2 } = require('./payroll/engine');

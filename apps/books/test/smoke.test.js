@@ -388,7 +388,7 @@ async function main() {
   check('draft run deletable', r.status === 200);
 
   r = await req('POST', '/api/payroll/runs', { payDate: '2031-01-09', periodStart: '2030-12-27', periodEnd: '2031-01-09' });
-  check('unknown tax year rejected', r.status === 400 && /No tax tables/.test(r.data.error));
+  check('unknown tax year rejected', r.status === 400 && /No payroll rule set/.test(r.data.error));
 
   // ---- multi-company + household taxes ----
   r = await req('GET', '/api/companies');

@@ -11,19 +11,17 @@
 // rate) go through mul()/percentOf() so they are computed at full precision
 // and rounded once, never as float64.
 
-const TABLES_BY_YEAR = {
-  2026: require('./tables2026')
-};
-
+const rules = require('@elias/rules');
 const money = require('../money');
 
+// Tax parameters now resolve through the cited, versioned @elias/rules package
+// (packages/rules/src/payroll.ts): every constant carries its primary-source
+// citation (IRS Pub 15-T line, N.J.S.A./N.J.A.C. §, SSA/NJ-DOL notice) and is
+// keyed by calendar year. payrollValues(year) returns the same plain-number
+// shape the engine consumed when the tables were hardcoded, and throws with an
+// actionable message for a year that has no registered rule set.
 function tablesForYear(year) {
-  const t = TABLES_BY_YEAR[year];
-  if (!t) {
-    throw new Error(`No tax tables for ${year}. Add lib/payroll/tables${year}.js ` +
-      'with that year\'s official values and register it in engine.js.');
-  }
-  return t;
+  return rules.payrollValues(year);
 }
 
 const PAY_PERIODS = { weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12 };
@@ -180,15 +178,43 @@ function grossEarnings(employee, inputs, frequency) {
   };
 }
 
+// Elective-deferral kinds subject to the IRC §402(g) annual limit.
+const ELECTIVE_DEFERRAL_KINDS = ['pretax_401k', 'roth_401k'];
+
+// Reduce the withheld total for one deduction kind by `cut` dollars,
+// distributing the reduction across that kind's entries last-in-first-out.
+// Used by the aggregate net guard; `cut` is always <= the kind's current total.
+function reduceKind(dedList, totals, kind, cut) {
+  let remaining = cut;
+  for (let i = dedList.length - 1; i >= 0 && remaining > 0; i--) {
+    const d = dedList[i];
+    if (d.kind !== kind) continue;
+    const take = Math.min(d.amount, remaining);
+    d.amount = money.sub(d.amount, take);
+    remaining = money.sub(remaining, take);
+  }
+  totals[kind] = Math.max(money.sub(totals[kind], cut), 0);
+}
+
 // Resolve each active deduction to a per-check amount.
 // Deduction: {name, kind, amountType, amount}; kind in pretax_health,
 // pretax_401k, roth_401k, aftertax.
-function deductionAmounts(deductions, gross) {
+// ctx (optional): {limit402g, priorYtdDeferrals} — when a §402(g) limit is
+// supplied, elective 401(k)/Roth deferrals are capped so YTD deferrals cannot
+// exceed the annual limit.
+function deductionAmounts(deductions, gross, ctx = {}) {
   const resolved = [];
   const totals = { pretax_health: 0, pretax_401k: 0, roth_401k: 0, aftertax: 0 };
+  const limit = num(ctx.limit402g);
+  // Room left under the annual elective-deferral limit (Infinity = no limit given).
+  let deferralRoom = limit > 0 ? Math.max(money.sub(limit, num(ctx.priorYtdDeferrals)), 0) : Infinity;
   for (const d of deductions) {
     let amount = d.amountType === 'percent' ? money.percentOf(gross, num(d.amount)) : cents(d.amount);
     amount = Math.min(amount, gross);  // never deduct more than the check
+    if (deferralRoom !== Infinity && ELECTIVE_DEFERRAL_KINDS.includes(d.kind)) {
+      amount = Math.min(amount, deferralRoom);   // IRC §402(g) annual cap
+      deferralRoom = Math.max(money.sub(deferralRoom, amount), 0);
+    }
     resolved.push({ name: d.name, kind: d.kind, amount });
     totals[d.kind] = money.add(totals[d.kind], amount);
   }
@@ -205,7 +231,8 @@ function deductionAmounts(deductions, gross) {
  *            nj:  {rateTable, allowances, extraWithholding, exempt}}
  * inputs    {hours, otHours, bonus, tips, reimbursement}
  * deductions list of active recurring deductions
- * ytd       prior-YTD: {ssWages, medicareWages, futaWages, njUiWages, njTdiWages}
+ * ytd       prior-YTD: {ssWages, medicareWages, futaWages, njUiWages,
+ *            njTdiWages, electiveDeferrals} (electiveDeferrals feeds §402(g))
  * settings  {njEmployerUiRate, njEmployerTdiRate} as decimals (e.g. 0.031)
  */
 function computePaycheck(year, employee, inputs, deductions, ytd, settings) {
@@ -214,58 +241,99 @@ function computePaycheck(year, employee, inputs, deductions, ytd, settings) {
 
   const { regular, overtime, bonus, tips } = grossEarnings(employee, inputs, frequency);
   const gross = money.sum(regular, overtime, bonus, tips);
-
-  const { resolved: dedList, totals: ded } = deductionAmounts(deductions, gross);
-
-  // Taxable wage bases. Section 125 health premiums are pretax for
-  // everything; 401(k) deferrals are pretax for federal and NJ income tax
-  // but NOT for FICA, FUTA, or NJ UI/TDI/FLI.
-  const s125 = ded.pretax_health;
-  const k401 = ded.pretax_401k;
-  const fitWages = Math.max(gross - s125 - k401, 0);
-  const ficaWages = Math.max(gross - s125, 0);
-  const njSitWages = fitWages;
-  const njBaseWages = ficaWages;  // UI/WF, TDI, FLI, and FUTA all use this
-
-  const fit = fedIncomeTaxWithholding(tables, fitWages, frequency, employee.fed);
-  const ss = socialSecurity(tables, ficaWages, ytd.ssWages);
-  // Split SS-taxable between non-tip wages (941 line 5a) and tips (5b);
-  // non-tip wages fill the wage-base cap first.
-  const nonTipFica = Math.max(ficaWages - tips, 0);
-  const ssWagesTaxable = Math.min(nonTipFica, ss.taxable);
-  const ssTipsTaxable = money.sub(ss.taxable, ssWagesTaxable);
-  const med = medicare(tables, ficaWages, ytd.medicareWages);
-  const fu = futa(tables, njBaseWages, ytd.futaWages);
-
-  const njSit = njIncomeTaxWithholding(tables, njSitWages, frequency, employee.nj);
-  const njEe = njEmployeeContributions(tables, njBaseWages, ytd.njUiWages, ytd.njTdiWages);
-  const njEr = njEmployerContributions(tables, njBaseWages, ytd.njUiWages,
-    settings.njEmployerUiRate || 0, settings.njEmployerTdiRate || 0);
-
-  const employeeTaxes = money.sum(fit, ss.employee, med.employee, njSit, njEe.uiWf, njEe.tdi, njEe.fli);
-  const totalDeductions = money.sum(...dedList.map(d => d.amount));
   const reimbursement = cents(inputs.reimbursement);
-  // net = gross - taxes - deductions + reimbursement, in exact cents
-  const net = money.sum(gross, -employeeTaxes, -totalDeductions, reimbursement);
+
+  // Elective 401(k)/Roth deferrals are capped at the IRC §402(g) annual limit
+  // (using prior-YTD deferrals), so a single check can't over-defer for the year.
+  const { resolved: dedList, totals: ded } = deductionAmounts(deductions, gross, {
+    limit402g: tables.ELECTIVE_DEFERRAL_LIMIT_402G,
+    priorYtdDeferrals: num(ytd.electiveDeferrals)
+  });
+
+  // Compute the full tax + net picture from the current deduction totals.
+  // Evaluated once for the requested deductions, then re-evaluated after the
+  // aggregate net guard trims voluntary deductions (a pre-tax trim changes
+  // taxable wages, so the picture must be recomputed, not patched).
+  function evaluate() {
+    // Taxable wage bases. Section 125 health premiums are pretax for
+    // everything; 401(k) deferrals are pretax for federal and NJ income tax
+    // but NOT for FICA, FUTA, or NJ UI/TDI/FLI.
+    const s125 = ded.pretax_health;
+    const k401 = ded.pretax_401k;
+    const fitWages = Math.max(gross - s125 - k401, 0);
+    const ficaWages = Math.max(gross - s125, 0);
+    const njSitWages = fitWages;
+    const njBaseWages = ficaWages;  // UI/WF, TDI, FLI, and FUTA all use this
+
+    const fit = fedIncomeTaxWithholding(tables, fitWages, frequency, employee.fed);
+    const ss = socialSecurity(tables, ficaWages, ytd.ssWages);
+    // Split SS-taxable between non-tip wages (941 line 5a) and tips (5b);
+    // non-tip wages fill the wage-base cap first.
+    const nonTipFica = Math.max(ficaWages - tips, 0);
+    const ssWagesTaxable = Math.min(nonTipFica, ss.taxable);
+    const ssTipsTaxable = money.sub(ss.taxable, ssWagesTaxable);
+    const med = medicare(tables, ficaWages, ytd.medicareWages);
+    const fu = futa(tables, njBaseWages, ytd.futaWages);
+
+    const njSit = njIncomeTaxWithholding(tables, njSitWages, frequency, employee.nj);
+    const njEe = njEmployeeContributions(tables, njBaseWages, ytd.njUiWages, ytd.njTdiWages);
+    const njEr = njEmployerContributions(tables, njBaseWages, ytd.njUiWages,
+      settings.njEmployerUiRate || 0, settings.njEmployerTdiRate || 0);
+
+    const employeeTaxes = money.sum(fit, ss.employee, med.employee, njSit, njEe.uiWf, njEe.tdi, njEe.fli);
+    const totalDeductions = money.sum(...dedList.map(d => d.amount));
+    // net = gross - taxes - deductions + reimbursement, in exact cents
+    const net = money.sum(gross, -employeeTaxes, -totalDeductions, reimbursement);
+    return {
+      fitWages: cents(fitWages), ficaWages: cents(ficaWages), njSitWages: cents(njSitWages),
+      ss, ssTipsTaxable, med, fu, fit, njSit, njEe, njEr, employeeTaxes, totalDeductions, net
+    };
+  }
+
+  let r = evaluate();
+
+  // ---- Aggregate net guard ----
+  // A per-deduction cap alone lets the SUM of deductions exceed take-home pay,
+  // producing a negative net check — which the direct-deposit path then
+  // silently dropped from the NACHA batch. No paycheck can withhold more than
+  // it pays out: trim voluntary deductions, lowest priority first (after-tax,
+  // then Roth deferral, then pre-tax 401(k), and health only as a last resort),
+  // until net >= 0. Mandatory taxes are never reduced.
+  const TRIM_ORDER = ['aftertax', 'roth_401k', 'pretax_401k', 'pretax_health'];
+  let deductionsReduced = false;
+  let guard = 0;
+  while (r.net < 0 && guard++ < 100) {
+    const kind = TRIM_ORDER.find(k => ded[k] > 0);
+    if (!kind) break;
+    const cut = Math.min(ded[kind], -r.net);
+    if (!(cut > 0)) break;
+    reduceKind(dedList, ded, kind, cut);
+    deductionsReduced = true;
+    r = evaluate();   // a pre-tax trim raises taxable wages; re-evaluate
+  }
 
   return {
     regular, overtime, bonus, tips, gross, reimbursement,
-    fitWages: cents(fitWages), ficaWages: cents(ficaWages),
-    njSitWages: cents(njSitWages),
-    ssTaxable: ss.taxable, ssTipsTaxable,
-    medicareTaxable: med.taxable,
-    addlMedicareWages: med.addlWages,
-    futaTaxable: fu.taxable,
-    njUiTaxable: njEe.uiTaxable, njTdiTaxable: njEe.tdiTaxable,
-    fit, ss: ss.employee, medicare: med.employee, njSit,
-    njUiWf: njEe.uiWf, njTdi: njEe.tdi, njFli: njEe.fli,
+    fitWages: r.fitWages, ficaWages: r.ficaWages,
+    njSitWages: r.njSitWages,
+    ssTaxable: r.ss.taxable, ssTipsTaxable: r.ssTipsTaxable,
+    medicareTaxable: r.med.taxable,
+    addlMedicareWages: r.med.addlWages,
+    futaTaxable: r.fu.taxable,
+    njUiTaxable: r.njEe.uiTaxable, njTdiTaxable: r.njEe.tdiTaxable,
+    fit: r.fit, ss: r.ss.employee, medicare: r.med.employee, njSit: r.njSit,
+    njUiWf: r.njEe.uiWf, njTdi: r.njEe.tdi, njFli: r.njEe.fli,
     deductions: dedList,
     dedPretaxHealth: ded.pretax_health, dedPretax401k: ded.pretax_401k,
     dedRoth401k: ded.roth_401k, dedAftertax: ded.aftertax,
-    totalDeductions, employeeTaxes, net,
-    erSs: ss.employer, erMedicare: med.employer, erFuta: fu.tax,
-    erNjUi: njEr.erUi, erNjTdi: njEr.erTdi,
-    erTotal: money.sum(ss.employer, med.employer, fu.tax, njEr.erUi, njEr.erTdi)
+    // Actual elective deferral this check after the §402(g) cap and net guard —
+    // feed this back into ytd.electiveDeferrals for the next check.
+    electiveDeferral: money.add(ded.pretax_401k, ded.roth_401k),
+    deductionsReduced,
+    totalDeductions: r.totalDeductions, employeeTaxes: r.employeeTaxes, net: r.net,
+    erSs: r.ss.employer, erMedicare: r.med.employer, erFuta: r.fu.tax,
+    erNjUi: r.njEr.erUi, erNjTdi: r.njEr.erTdi,
+    erTotal: money.sum(r.ss.employer, r.med.employer, r.fu.tax, r.njEr.erUi, r.njEr.erTdi)
   };
 }
 
