@@ -9,7 +9,7 @@ const { buildEntries, filterEntries, totals } = require('../src/entries');
 const { textReport, csvReport, htmlInvoice, money } = require('../src/report');
 const { ledesExport } = require('../src/ledes');
 const { installHooks, eventFromHookPayload, settingsPath } = require('../src/hooks');
-const { clientExportsAllowed, DISABLED_MESSAGE } = require('../src/exports-gate');
+const { isClientBillable } = require('../src/client-billing');
 
 const USAGE = `Matterproof — proof of work for every matter
 
@@ -31,6 +31,10 @@ Commands:
   status                       Today's billable summary
   report [--from D] [--to D] [--client C] [--matter M]
          [--format text|csv|html|ledes] [--out FILE]
+         [--bill [--reference R]]   (ledes) record the invoice as issued:
+                               stamp the billed marker so re-export can't
+                               double-bill. Only reviewed, attorney-confirmed
+                               entries are ever included.
   economics [--from D] [--to D]    Per-matter unit economics: actual hours,
                                AI cost, effective rate, flat-fee margin
   fee <client> <matter> <amount>   Record a flat fee for a matter (economics)
@@ -270,13 +274,6 @@ async function main() {
         matter: args.matter,
       });
       const format = args.format || 'text';
-      // #18 stopgap: LEDES and HTML are the client-facing invoice formats.
-      // Refuse them until reviewed-only billing is enforced (Phase 4 / #23).
-      if ((format === 'ledes' || format === 'html') && !clientExportsAllowed()) {
-        console.error(`Refusing to emit a ${format.toUpperCase()} invoice. ${DISABLED_MESSAGE}`);
-        process.exitCode = 1;
-        return;
-      }
       let output;
       if (format === 'csv') {
         output = csvReport(entries, config);
@@ -301,6 +298,16 @@ async function main() {
         console.log(`Wrote ${args.out}`);
       } else {
         console.log(output);
+      }
+      // A LEDES file is a real billing channel. `--bill` records the invoice as
+      // issued: it stamps the mutually-exclusive billed marker on every included
+      // entry (#18), so a re-export excludes them and no entry is double-billed.
+      if (format === 'ledes' && args.bill) {
+        const billed = entries.filter(isClientBillable);
+        const reference = typeof args.reference === 'string' ? args.reference : `MP-LEDES-${today()}`;
+        for (const e of billed) store.markBilled(e.id, 'ledes', reference);
+        console.log(`Marked ${billed.length} entr${billed.length === 1 ? 'y' : 'ies'} billed to LEDES ` +
+          `under ${reference}; a re-export will exclude them.`);
       }
       return;
     }
@@ -359,14 +366,10 @@ async function main() {
         return;
       }
       if (sub === 'push') {
-        // #18 stopgap: pushing entries into Clio bills the client. A dry-run is
-        // a local preview (no external write), so it stays allowed; the real
-        // push is refused until reviewed-only billing is enforced (Phase 4 / #23).
-        if (!args['dry-run'] && !clientExportsAllowed()) {
-          console.error(`Refusing to push entries to Clio. ${DISABLED_MESSAGE}`);
-          process.exitCode = 1;
-          return;
-        }
+        // Pushing entries into Clio bills the client — now safe by structure:
+        // classifyForPush only includes reviewed, attorney-confirmed, unbilled,
+        // mapped entries (#17/#18), and records each clioId so re-pushing is a
+        // no-op. A dry-run previews without any external write.
         const entries = filterEntries(buildEntries(store.readEvents(), config, store.readOverrides()), {
           from: args.from,
           to: args.to,
@@ -435,13 +438,9 @@ async function main() {
         process.exitCode = 1;
         return;
       }
-      // #18 stopgap: a payment link is a client-facing bill (and --send emails
-      // it). Refuse until reviewed-only billing is enforced (Phase 4 / #23).
-      if (!clientExportsAllowed()) {
-        console.error(`Refusing to create a LawPay payment request. ${DISABLED_MESSAGE}`);
-        process.exitCode = 1;
-        return;
-      }
+      // A payment link is a client-facing bill (and --send emails it). Safe by
+      // structure now: buildPaymentRequest includes only reviewed, confirmed,
+      // unbilled entries (#17/#18) and marks them billed on success.
       if (args.send && args['dry-run']) {
         console.error('--send and --dry-run cannot be combined: sending IS the request.');
         process.exitCode = 1;

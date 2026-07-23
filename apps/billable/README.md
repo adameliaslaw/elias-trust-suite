@@ -3,14 +3,15 @@
 **A contemporaneous record of AI work on client matters.** An evidence-grade
 ledger, kept like a timesheet.
 
-> **Status: experimental alpha — not for client billing yet.** The durations
-> Matterproof records are a *machine estimate of elapsed activity*, not
-> confirmed attorney minutes, and the review gate is not yet enforced (issues
-> #17, #18). Until that lands (Phase 4 / #23), **client-facing exports are
-> disabled by default** — LEDES/HTML invoices, LawPay links, and Clio pushes
-> all refuse to run unless an operator explicitly sets
-> `BILLABLE_ALLOW_CLIENT_EXPORTS=1`. Use it as a supervision/audit record, not
-> as a source of bills.
+> **Status: alpha — billing is now safe by structure (Phase 4 / #23).** AI
+> runtime is captured as **cost and provenance metadata only**: inferred
+> attorney time defaults to **zero**, and a billable minute exists only once an
+> attorney enters/confirms the human minutes actually worked (#17). Client
+> billing is gated by the data itself, not an env stopgap — LEDES/HTML invoices,
+> LawPay links, and Clio pushes include an entry only when it is **reviewed**,
+> **attorney-confirmed**, and **not already billed**, and each entry bills to a
+> single destination exactly once (#18). The old
+> `BILLABLE_ALLOW_CLIENT_EXPORTS` switch has been removed.
 
 AI now does real work on client matters — drafting, research, analysis — and
 that creates a bookkeeping problem the billing stack can't see: *what did the
@@ -18,12 +19,12 @@ AI do, on whose matter, for how long, and who reviewed it?* Matterproof
 records every step Claude takes, contemporaneously, so an attorney can review
 it and decide what — if anything — becomes a time entry:
 
-- **Recorded activity, pending human confirmation** — entries reflect measured
-  elapsed activity rounded to 6-minute (0.1 hr) increments, with idle gaps
-  capped so away-from-keyboard time is never counted. This is an *estimate a
-  human must confirm*, not attorney time by itself. **ABA Formal Op. 512**
-  requires billing actual time, never time "saved"; nothing here reaches a
-  client bill until confirmed and reviewed. See [ETHICS.md](ETHICS.md).
+- **AI runtime is provenance, not time** — captured elapsed activity (idle gaps
+  capped) becomes a *suggestion* the dashboard shows the attorney; it is never
+  billable on its own. A billable hour appears only when the attorney enters or
+  confirms the human minutes worked. **ABA Formal Op. 512** requires billing
+  actual time, never time "saved"; nothing reaches a client bill until it is
+  attorney-confirmed and reviewed. See [ETHICS.md](ETHICS.md).
 - **Attorney review workflow** — a local web dashboard where you approve,
   adjust, or write off every entry before billing. Review decisions are
   stored apart from the raw ledger, preserving the underlying record as your
@@ -33,11 +34,13 @@ it and decide what — if anything — becomes a time entry:
 - **Client/matter routing** by project directory.
 - **AI cost pass-through** — disclosed as a separate expense computed from
   unrounded runtime, never blended into fees.
-- **Exports** — terminal timesheet and CSV are always available. The
+- **Exports** — terminal timesheet and CSV (internal) are always available. The
   client-facing formats (**LEDES 1998B**, printable HTML statement, LawPay
-  links, Clio push) are **disabled by default** pending review enforcement
-  (#18); opt in with `BILLABLE_ALLOW_CLIENT_EXPORTS=1` once you understand the
-  caveat above.
+  links, Clio push) include only reviewed, attorney-confirmed, unbilled work,
+  and mark each entry billed so no entry is double-billed. LEDES units are exact
+  at any increment (quarter-hour billing validates), and multi-matter files
+  group into one invoice per matter. `billable report --format ledes --bill`
+  records the invoice as issued.
 - **Local-only by design** — no cloud, no telemetry; the dashboard binds to
   127.0.0.1. See [PRIVACY.md](PRIVACY.md).
 

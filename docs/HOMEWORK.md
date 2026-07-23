@@ -41,67 +41,77 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 3 (epic #22) — reconciliation lifecycle + 7-year retention. All #22
-checklist items done; one PR opened off `main` (branch `claude/phase3-recon-lifecycle-kq9e8j`). Critical
-#14 closed by the PR.
+**Session that just ran:** Phase 4 (epic #23) — Matterproof billing redesign. All #23 checklist items done;
+one PR opened off `main` (branch `claude/phase4-matterproof-billing-prr5ln`). Criticals #17 and #18 closed
+by the PR.
 
-**Decision context:** #19 **Decision 3 (system of record) is still unratified** (no sign-off comment,
-box unchecked). Phase 3 is decision-safe regardless: finalize/lock/retention is trust accounting, which
-Decision 3 keeps with the suite under every option. No invoice/payment "system of record" object was built.
+**Decision context:** #19 **Decision 3 (system of record) is still unratified** (no sign-off comment, box
+unchecked as of this session). Phase 4 is decision-safe under the recommended default C: time capture with
+attorney-confirmed provenance and a reviewed-once export is squarely the suite's own time-capture domain. No
+invoice/payment/AR "system of record" object was built — LEDES/Clio/LawPay stay integration *destinations*,
+not a general ledger.
 
-**What landed (with commit SHAs):**
-- `a6a0dd7` — the whole Phase 3 lifecycle:
-  - **#14 lifecycle** — new pure module `src/lifecycle.ts`: the state machine (`draft → resolve
-    exceptions → attorney attest → finalize → immutable lock`; `reopenForAmendment` = reason + new
-    version). `buildFinalizedPacket` freezes the bank/book/statement/match inputs + computed legs into a
-    `FinalizedPacket` whose `contentHash = sha256(canonical(body))` (`@elias/audit/core`). It cites
-    `RECON_AUTHORITY` (NJ Court Rule 1:21-6) and computes `retentionUntil` = finalizedAt + 7 years
-    (TZ-independent). `canonicalizeInputs` sorts streams so the packet is byte-for-byte reproducible.
-    `assertPeriodMutable` / `LockedPeriodError` reject any tx mutation dated within a locked month.
-    `renderPacketDocument` is a deterministic CSV/text artifact.
-  - **Seal only on finalize** — removed the 1.5s debounced auto-emit in `App.tsx`; the draft-persist
-    effect now writes drafts only and **skips finalized months**. `reconciliation.completed` is sealed
-    exclusively by `handleFinalizeMonth` (attorney attest + finalize).
-  - **Payload fix (M2)** — `reconciliationCompletedPayload` sets `bankBalanceCents` = ADJUSTED bank
-    balance, so `book − bank === difference` holds.
-  - **Source retention** — `server.ts` content-hashes each upload and keeps a copy under
-    `uploads/retained/{sha256}{ext}` (idempotent, content-addressed) instead of always unlinking;
-    returns `sha256`+`bytes`. New `GET /api/source/:hash` serves the retained bytes (hex-validated).
-    `App.tsx` records `sourceStatements` docs (name+hash+covered months) on import; finalize cites them.
-  - **App wiring** — lock guards in edit/add/delete/clear/import handlers; `sourceStatements` &
-    `reconciliationPackets` subscriptions; `lockedMonths` memo; Attest/Finalize + Reopen modal + UI.
-  - **@elias/audit** — added `reconciliation.reopened` event (payload in `events.ts`, exports in
-    `core.ts`/`index.ts`, listed in `AUDIT_EVENT_TYPES`).
-  - **firestore.rules** — immutable `reconciliationPackets` (create-only), `sourceStatements`, and
-    `periodFinalized()` lock enforcement on `transactions`/`statementBalances`. **Still UNDEPLOYED**
-    (Phase 8 / #27) — client-side `lifecycle.ts` is the live enforcement today.
-  - `src/types.ts` `Reconciliation` gained lifecycle fields; `src/reconciliation.ts` extracted
-    `legacyStreams()` (exported) so the finalize path freezes the exact streams with no drift.
-- New tests: `test/lifecycle.test.ts` (7 cases) wired into the iolta `test` script.
+**What landed (commit SHA `dc598c2`):**
+- **#17 — inferred time = zero (`apps/billable/src/entries.js`).** `finishTask` records the machine estimate
+  as `suggestedHours` and sets billable `hours: 0`, `confirmed: false`; AI runtime stays as `seconds`
+  (cost/provenance). A manual entry is attorney-entered, so it's `confirmed: true` by construction.
+  `applyOverride` marks `entry.confirmed` when an attorney supplies hours, computes `entry.billable`
+  (`!writeOff && confirmed && hours>0`), and prices the fee only for billable entries. `totals` gained
+  `unconfirmed`/`billableCount`.
+- **#18 — reviewed-only, mutually-exclusive, idempotent billing (new `apps/billable/src/client-billing.js`).**
+  A single `billed` marker (`{destination, reference, at}`; legacy `lawpayRef`/`clioId` still count).
+  `isClientBillable`/`classifyForClient` require reviewed + confirmed + not-written-off + not-already-billed,
+  applied on EVERY client path: `ledes.js` and `report.js#htmlInvoice` filter internally; `lawpay.js`
+  `classifyForBilling` and `clio.js` `classifyForPush` classify against the unified marker. `store.markBilled`
+  + CLI `report --format ledes --bill` record a LEDES invoice as issued. Second export of an entry = no-op.
+- **Rate snapshot at review** — `client-billing.reviewRateSnapshot` freezes `config.rate` onto the override
+  the first time `reviewed` flips true (wired into `server.js` `/api/override`); `applyOverride` prices from
+  `entry.rate` (snapshot), so the rate table never reprices historical entries.
+- **M5 LEDES (`ledes.js`)** — `formatUnits` emits exact units (no hardcoded tenths); unit cost = the entry's
+  snapshot rate; `units × unit-cost === line total` at tenths and quarter-hours. Multi-matter files group
+  into one invoice per client/matter (`matterInvoiceNumber`), each with its own INVOICE_NUMBER/INVOICE_TOTAL
+  and per-invoice line numbering.
+- **M6 (`store.js`)** — `scrubForPrivacy` in `store.appendEvent` blanks prompt `detail` when
+  `capturePrompts:false`, at the single choke point every writer (CLI `log`, POST /api/log, extension) passes
+  through.
+- **Fail-loud JSONL (`store.js`)** — `readEvents` throws (naming the line number) on a malformed record
+  instead of silently dropping it.
+- **Clio OAuth (`clio.js`)** — `buildAuthRequest` adds `state` + PKCE (S256); `waitForCode({expectedState,
+  timeoutMs, onListening})` validates state (CSRF) and enforces a callback timeout; `exchangeToken` sends the
+  `code_verifier`.
+- **Stopgap removed** — deleted `src/exports-gate.js` + `test/exports-gate.test.js` and every
+  `BILLABLE_ALLOW_CLIENT_EXPORTS` reference (server, CLI, run.js). Dashboard shows the confirm-minutes UX
+  (est vs confirmed, unconfirmed count); README/ETHICS de-claimed accordingly.
+- New tests: `test/phase4.test.js` (16 cases) wired into `test/run.js`; several existing run.js tests updated
+  to the new confirmed-minutes contract (no tests deleted to go green — the removed exports-gate test pinned a
+  deliberately-superseded stopgap and was replaced by stronger structural tests).
 
-**State of the repo:** all suites green (`npm test` exit 0 across every workspace); typecheck clean; vite
-build clean. Backlog: #14 closed by this PR; #11/#15 (Phase 2), #12/#13/#20 (Phase 1) closed. #19
-unratified (decision memo).
+**State of the repo:** all suites green (`npm test` exit 0 across every workspace — billable 52, iolta 18,
+audit 16, money 22; books green); typecheck clean. Billable determinism verified 5/5 runs. Backlog: #17/#18
+closed by this PR; #14 (Phase 3), #11/#15 (Phase 2), #12/#13/#20 (Phase 1) closed. #19 unratified.
 
-**Next session → Phase 4 (epic #23): redesign Matterproof billing.** Unblocked (only depended on Phase 1,
-which is done). Context: `docs/EVALUATION.md` (#17 Matterproof invents ~0.1h/prompt attorney time; #18
-review gate bypassable — Phase 1 *contained* both: client-facing exports gated behind
-`BILLABLE_ALLOW_CLIENT_EXPORTS=1`, docs de-claimed). Phase 4 is the real redesign: don't fabricate time,
-make the review gate structural, and honor `capturePrompts:false` (M6). All money through `@elias/money`,
-all compliance events through `@elias/audit`.
+**Next session → Phase 5 (epic #24): data + audit hardening.** Unblocked (Phases 2–4 done). Context:
+`docs/EVALUATION.md` — H1 (books audit screen shows the forgeable log, not the tamper-evident chain), #16
+(billable audit verify ignores the head it maintains; lost localStorage queue drops entries silently), #24
+(books stores Plaid/ACH/employee-bank secrets in plaintext, backups included), plus M7 (books data-store
+races) and M8 (GET endpoints mutate state). All money through `@elias/money`, all compliance events through
+`@elias/audit`.
 
 **Gotchas (carried forward + new):**
-- `npm ci` then `npm run build --workspace @elias/money --workspace @elias/audit` before app tests
-  (apps depend on built `dist/`). **After editing `packages/audit` types (e.g. a new event), rebuild it**
-  or iolta typecheck fails against stale `dist/`.
-- **Do NOT `git checkout apps/billable/bin/billable.js` to drop a `chmod +x` mode diff** — it also reverts
-  content. Use `chmod 644` / `git update-index --chmod=-x`. HEAD mode is `100644`. (Hit again this session;
-  `chmod 644` cleared it.)
+- `npm ci` then `npm run build --workspace @elias/money --workspace @elias/audit` before app tests (apps
+  depend on built `dist/`). **After editing `packages/audit` types, rebuild it** or dependents typecheck
+  against stale `dist/`. (Phase 4 did NOT touch `@elias/audit` — the new billing events reuse the existing
+  `entry.override_written` chain, so no audit rebuild was needed.)
+- **Do NOT `git checkout apps/billable/bin/billable.js` to drop a `chmod +x` mode diff** — it reverts
+  content too. Use `chmod 644` / `git update-index --chmod=-x`. HEAD mode is `100644`. (The billable test
+  run flips the bit; `chmod 644` before staging cleared it this session too.)
 - Lockfile must keep `grep -c msh.team package-lock.json` = 0.
-- iolta lifecycle logic lives in `src/lifecycle.ts` (pure, browser-safe — imports only `@elias/audit/core`
-  + the money bridge); reconciliation in `src/reconciliation.ts` (`reconcileStreams` core + `legacyStreams`
-  adapter). Extend those pure modules, not the `App.tsx` effects.
-- iolta Firestore rules (`firestore.rules`) — including the new lifecycle/lock rules — are written but
-  **undeployed**; deployment is Phase 8 / #27.
-- Retained sources live on local disk (`uploads/retained/`), local-first per #19 Decision 2 — do not add a
-  cloud store.
+- **billable's test runner (`test/run.js`) fires async tests WITHOUT awaiting** — they resume after the whole
+  synchronous sweep and read whatever `process.env.BILLABLE_HOME` is then set to. A sync test that
+  `freshHome()`s and leaves a *throwing* ledger active will crash unrelated async tests. Phase 4's new tests
+  either stay synchronous or save/restore `BILLABLE_HOME`; if you add async billable tests, keep them
+  self-consistent on the final env and never leave a corrupt home active.
+- billable billing logic lives in the pure modules — `entries.js` (build/override/totals),
+  `client-billing.js` (the billed marker + client-export gate), `ledes.js`, `economics.js`. Extend those,
+  not the `server.js` request handlers.
+- billable has no typecheck/lint in CI (plain JS, L1) — lean on the runtime tests (`node test/run.js`).

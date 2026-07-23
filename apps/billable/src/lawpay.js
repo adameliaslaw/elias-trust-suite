@@ -20,14 +20,21 @@ const store = require('./store');
 const audit = require('./audit');
 const { totals } = require('./entries');
 const { sumCents } = require('./money');
+const { isBilled } = require('./client-billing');
 
+// A payment request may include an entry only when it is reviewed, built on
+// attorney-confirmed minutes (#17), not written off, and not already billed to
+// ANY destination (#18 — billing is mutually exclusive, so a Clio- or
+// LEDES-billed entry is skipped here too). `overrides` carries the billed
+// marker; the entry carries reviewed/confirmed from applyOverride.
 function classifyForBilling(entries, overrides) {
   const ready = [];
-  const skipped = { unreviewed: 0, writeOff: 0, alreadyBilled: 0 };
+  const skipped = { unreviewed: 0, unconfirmed: 0, writeOff: 0, alreadyBilled: 0 };
   for (const e of entries) {
-    if (overrides[e.id] && overrides[e.id].lawpayRef) skipped.alreadyBilled++;
+    if (isBilled(overrides[e.id]) || e.billed) skipped.alreadyBilled++;
     else if (e.writeOff) skipped.writeOff++;
     else if (!e.reviewed) skipped.unreviewed++;
+    else if (!e.confirmed || !(e.hours > 0)) skipped.unconfirmed++;
     else ready.push(e);
   }
   return { ready, skipped };

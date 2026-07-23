@@ -4,11 +4,14 @@
 > [HOMEWORK.md](HOMEWORK.md) for exactly where to start, then the epic issue for the phase.
 > Canonical plan: [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) · Findings narrative:
 > [EVALUATION.md](EVALUATION.md) · Backlog: GitHub Issues **#11–#27**.
-> Last updated: 2026-07-22 — Phase 3 (#22) complete (PR open): reconciliation lifecycle (#14) —
-> draft→attest→finalize→immutable lock; a finalized month freezes its inputs + legs into a hash-chained,
-> byte-for-byte reproducible packet retained seven years (Rule 1:21-6); reconciliation.completed is sealed
-> only on a deliberate attested finalize (no more debounced auto-emit) and its payload is now self-consistent;
-> source statements retained. All with reproducing tests. Phase 2 (#21) and Phase 1 (#20) landed before it.
+> Last updated: 2026-07-23 — Phase 4 (#23) complete (PR open): Matterproof billing redesign. AI runtime is
+> cost/provenance metadata only — inferred attorney time defaults to **zero**; a billable minute exists only
+> once an attorney confirms human minutes (#17). Client exports are reviewed-only, mutually exclusive, and
+> idempotent — one `billed` marker, a second export is a no-op (#18). Rate is snapshotted at review (no
+> retroactive repricing); LEDES units are exact at any increment with correct multi-matter grouping (M5);
+> `capturePrompts:false` is enforced on every write path (M6); malformed JSONL fails loud; Clio OAuth adds
+> state + PKCE + callback timeout. The Phase 1 `BILLABLE_ALLOW_CLIENT_EXPORTS` stopgap is removed — billing is
+> safe by structure now. All with reproducing tests. Phases 1–3 (#20/#21/#22) landed before it.
 
 ## Product
 
@@ -22,7 +25,7 @@ integrated product.
 |---|---|---|---|---|
 | **Books** | Internal beta; broad, useful | High for Schedule Elias; ordinary elsewhere | Moderate | High for owner; moderate externally |
 | **IOLTA** | Alpha; foundational reconciliation flaws | Moderate now; high as NJ audit-readiness product | Approachable UI, incomplete workflow | High potential, unreliable today |
-| **Matterproof** | Experimental alpha | Very high conceptually | Developer-oriented | High potential; must not create client bills yet |
+| **Matterproof** | Alpha; billing safe by structure | Very high conceptually | Developer-oriented | High potential; client bills now gated on attorney-confirmed minutes + review |
 | **Suite** | Pre-product | Strong collection of ideas | Low — three setups/identities | High internal potential, low current sellability |
 
 ## Reality check on prior claims
@@ -54,9 +57,18 @@ The previous STATUS asserted "480 checks green" and a sound audit/reconciliation
   (`{accountId}__{month}`), no hardcoded `iolta-trust`. Two firms/accounts coexist without collision
   (reproducing test). Rules written; deployment deferred (Phase 8 / #27).
 - ❌ **Books stores Plaid/ACH/employee-bank secrets in plaintext**, backups included. (#24 — Phase 5)
-- ⚠️ **Matterproof invents attorney time** (~0.1h/prompt) and its **review gate is bypassable**
-  (#17, #18 — Phase 4). **Contained (#20):** client-facing exports (LEDES/HTML/LawPay/Clio) are now
-  disabled by default; docs no longer claim actual-time billing.
+- ✅ **FIXED (#17, #18, Phase 4)** — Matterproof no longer invents attorney time. AI runtime is
+  cost/provenance metadata only; billable `hours` default to zero and become non-zero solely when an
+  attorney confirms human minutes (`entries.js`; `finishTask` records `suggestedHours`, `applyOverride`
+  computes `billable`). Client exports (LEDES/HTML/LawPay/Clio) are structurally reviewed-only,
+  attorney-confirmed, and mutually-exclusive with a single idempotent `billed` marker
+  (`src/client-billing.js`); a second export of an entry is a no-op. Rate is snapshotted at review
+  (`reviewRateSnapshot`), so the rate table never reprices historical entries. The Phase 1
+  `BILLABLE_ALLOW_CLIENT_EXPORTS` env stopgap is removed. Reproducing tests in `test/phase4.test.js`.
+- ✅ **FIXED (M5, M6, JSONL, Clio, Phase 4)** — LEDES units exact at any increment + multi-matter
+  grouping (`ledes.js`); `capturePrompts:false` enforced at the single write choke point
+  (`store.appendEvent`); malformed ledger records fail loud (`store.readEvents`); Clio OAuth adds
+  state + PKCE + callback timeout (`clio.js`). Reproducing tests added.
 
 The tests are valuable but largely do not cover these paths.
 
@@ -68,8 +80,8 @@ The tests are valuable but largely do not cover these paths.
 | 1 — Contain risk + regression tests | #20 | ✅ Done — CI deterministic |
 | 2 — Rebuild IOLTA accounting model | #21 | ✅ Done — PR open (#11, #15 closed) |
 | 3 — Reconciliation lifecycle + retention | #22 | ✅ Done — PR open (#14 closed) |
-| 4 — Redesign Matterproof billing | #23 | ⬜ Next ← **START HERE (code)** (blocked on 1 only; 1 done) |
-| 5 — Data + audit hardening | #24 | ⬜ Blocked on 2–4 |
+| 4 — Redesign Matterproof billing | #23 | ✅ Done — PR open (#17, #18 fixed) |
+| 5 — Data + audit hardening | #24 | ⬜ Next ← **START HERE (code)** (2–4 done) |
 | 6 — Books role + `packages/rules` | #25 | ⬜ Blocked on 0 |
 | 7 — Suite integration + `packages/auth` | #26 | ⬜ Blocked on 2–6 |
 | 8 — Release engineering | #27 | ⬜ Parallelizable; finalize last |
@@ -104,6 +116,7 @@ The tests are valuable but largely do not cover these paths.
 - iolta pulls `xlsx` from a CDN tarball (fragile — Phase 8 / #27).
 - iolta `start` now runs `NODE_ENV=production tsx server.ts` (with a `prestart` build) — `node
   server.ts` couldn't run TypeScript under Node 20. Full deploy config (PORT/env loading) is Phase 8.
-- Matterproof client-facing exports are gated behind `BILLABLE_ALLOW_CLIENT_EXPORTS=1` (#18 stopgap);
-  the billable test suite sets it so capability tests still run.
+- Matterproof client exports are no longer gated by an env var (Phase 4 removed the
+  `BILLABLE_ALLOW_CLIENT_EXPORTS` stopgap). They are gated structurally: only reviewed,
+  attorney-confirmed, unbilled entries can reach a client, and each bills once.
 - Test runs may `chmod +x` `apps/billable/bin/billable.js` (mode-only diff) — discard it.

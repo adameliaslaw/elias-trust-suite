@@ -9,10 +9,10 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 process.env.BILLABLE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'billable-test-'));
-// The test harness is an authorized operator: opt the whole suite into
-// client-facing exports so capability tests exercise the real paths. The
-// #18-stopgap default (OFF) is proven separately in exports-gate.test.js.
-process.env.BILLABLE_ALLOW_CLIENT_EXPORTS = '1';
+// Phase 4 removed the BILLABLE_ALLOW_CLIENT_EXPORTS stopgap: client billing is
+// now safe by STRUCTURE (reviewed-only + attorney-confirmed minutes + a single
+// mutually-exclusive billed marker), enforced and proven in phase4.test.js — no
+// deploy-time env switch to flip.
 
 const { roundHours, activeSeconds, narrative, classifyTool } = require('../src/billing');
 const { sumCents } = require('../src/money');
@@ -70,11 +70,13 @@ test('generates attorney-style narratives', () => {
 
 test('money math is exact: no float64 fee or total drift', () => {
   // 1.5h x $13.35 = $20.025 -> half-up $20.03. Float round2 gave $20.02.
-  const e = { writeOff: false, manual: false, hours: 1.5, seconds: 5400 };
+  // confirmed:true — these represent attorney-confirmed minutes (#17), the only
+  // kind that price to a fee.
+  const e = { writeOff: false, manual: false, hours: 1.5, seconds: 5400, confirmed: true };
   applyOverride(e, null, { rate: 13.35, aiCostPerHour: 0 });
   assert.equal(e.amount, 20.03);
   // half-cent boundary: 0.5h x $4.21 = $2.105 -> $2.11
-  const e2 = { writeOff: false, manual: false, hours: 0.5, seconds: 1800 };
+  const e2 = { writeOff: false, manual: false, hours: 0.5, seconds: 1800, confirmed: true };
   applyOverride(e2, null, { rate: 4.21, aiCostPerHour: 0 });
   assert.equal(e2.amount, 2.11);
   // totals accumulate in integer cents: 0.1+0.2 style drift impossible
@@ -120,11 +122,23 @@ test('builds one entry per prompt-to-stop task', () => {
   ];
   const entries = buildEntries(events, config);
   assert.strictEqual(entries.length, 2);
-  assert.strictEqual(entries[0].hours, 0.2); // 8 minutes -> 0.2 hr
-  assert.strictEqual(entries[0].amount, 20);
+  // #17: AI capture yields a SUGGESTION, not billable time. Billable hours are
+  // zero until an attorney confirms minutes; nothing is billed automatically.
+  assert.strictEqual(entries[0].suggestedHours, 0.2); // 8 minutes measured
+  assert.strictEqual(entries[0].hours, 0);
+  assert.strictEqual(entries[0].confirmed, false);
+  assert.strictEqual(entries[0].billable, false);
+  assert.strictEqual(entries[0].amount, 0);
   assert.strictEqual(entries[0].steps, 2);
   assert.match(entries[0].description, /re: fix bug/);
-  assert.strictEqual(entries[1].hours, 0.1); // 3 minutes -> minimum 0.1
+  assert.strictEqual(entries[1].suggestedHours, 0.1); // 3 minutes -> minimum 0.1
+  assert.strictEqual(entries[1].hours, 0);
+  // Once the attorney confirms minutes, the entry becomes billable.
+  const id0 = require('../src/entries').entryId('s1', events[0].ts);
+  const confirmed = buildEntries(events, config, { [id0]: { hours: 0.2, reviewed: true } });
+  assert.strictEqual(confirmed[0].hours, 0.2);
+  assert.strictEqual(confirmed[0].billable, true);
+  assert.strictEqual(confirmed[0].amount, 20);
 });
 
 test('routes work to client/matter by project directory', () => {
@@ -200,9 +214,11 @@ test('LEDES 1998B export has well-formed rows', () => {
   const entries = [
     { id: 'a', date: '2026-07-15', client: 'Acme', matter: 'ACME-001', code: 'A103',
       description: 'Drafted motion | with pipes', steps: 5, seconds: 600, hours: 0.2,
+      confirmed: true, rate: 250, billed: null,
       amount: 50, aiCost: 1.25, manual: false, reviewed: true, writeOff: false },
     { id: 'b', date: '2026-07-15', client: 'Acme', matter: 'ACME-001', code: 'A104',
       description: 'written off', steps: 2, seconds: 60, hours: 0.1,
+      confirmed: true, rate: 250, billed: null,
       amount: 0, aiCost: 0, manual: false, reviewed: true, writeOff: true },
   ];
   const out = ledesExport(entries, config, { invoiceNumber: 'INV-1' });
@@ -265,7 +281,8 @@ test('web-captured prompts carry explicit client/matter routing', () => {
   assert.strictEqual(entry.client, 'Acme Corp');
   assert.strictEqual(entry.matter, 'Acme Corp'); // explicit client, no matter -> matter named after client
   assert.strictEqual(entry.source, 'claude-web');
-  assert.strictEqual(entry.hours, 0.2); // 8 min of in-cap activity
+  assert.strictEqual(entry.suggestedHours, 0.2); // 8 min of in-cap activity, measured
+  assert.strictEqual(entry.hours, 0); // #17: not billable until an attorney confirms minutes
 });
 
 test('unit economics: actual vs billed hours, flat-fee margin', () => {
@@ -297,14 +314,14 @@ test('Clio push: only reviewed+mapped entries, correct payload, records clioId',
     clio: { accessToken: 'tok', refreshToken: 'r', expiresAt: Date.now() + 3600_000 },
   };
   const entries = [
-    { id: 'e1', date: '2026-07-15', client: 'Acme', matter: 'ACME-001', description: 'Drafted motion.', hours: 0.3, amount: 75, reviewed: true, writeOff: false },
-    { id: 'e2', date: '2026-07-15', client: 'Acme', matter: 'ACME-001', description: 'x', hours: 0.1, amount: 25, reviewed: false, writeOff: false },
-    { id: 'e3', date: '2026-07-15', client: 'Zeta', matter: 'Z-1', description: 'x', hours: 0.1, amount: 25, reviewed: true, writeOff: false },
-    { id: 'e4', date: '2026-07-15', client: 'Acme', matter: 'ACME-001', description: 'x', hours: 0.1, amount: 25, reviewed: true, writeOff: true },
+    { id: 'e1', date: '2026-07-15', client: 'Acme', matter: 'ACME-001', description: 'Drafted motion.', hours: 0.3, amount: 75, confirmed: true, reviewed: true, writeOff: false },
+    { id: 'e2', date: '2026-07-15', client: 'Acme', matter: 'ACME-001', description: 'x', hours: 0.1, amount: 25, confirmed: true, reviewed: false, writeOff: false },
+    { id: 'e3', date: '2026-07-15', client: 'Zeta', matter: 'Z-1', description: 'x', hours: 0.1, amount: 25, confirmed: true, reviewed: true, writeOff: false },
+    { id: 'e4', date: '2026-07-15', client: 'Acme', matter: 'ACME-001', description: 'x', hours: 0.1, amount: 25, confirmed: true, reviewed: true, writeOff: true },
   ];
   const { ready, skipped } = classifyForPush(entries, config, { e1: {} });
   assert.strictEqual(ready.length, 1);
-  assert.deepStrictEqual(skipped, { unreviewed: 1, unmapped: 1, writeOff: 1, alreadyPushed: 0 });
+  assert.deepStrictEqual(skipped, { unreviewed: 1, unconfirmed: 0, unmapped: 1, writeOff: 1, alreadyPushed: 0 });
 
   const body = activityBody(entries[0], 777, config);
   assert.strictEqual(body.data.quantity, 1080); // 0.3 hr in seconds
@@ -340,9 +357,9 @@ test('LawPay link: gated on review, amount in cents, marks entries billed', () =
   };
   const entries = [
     { id: 'p1', date: '2026-07-10', client: 'Acme', matter: 'ACME-001', description: 'Drafted will package.',
-      steps: 5, seconds: 3600, hours: 1.0, amount: 250, aiCost: 6, reviewed: true, writeOff: false },
+      steps: 5, seconds: 3600, hours: 1.0, amount: 250, aiCost: 6, confirmed: true, reviewed: true, writeOff: false },
     { id: 'p2', date: '2026-07-11', client: 'Acme', matter: 'ACME-001', description: 'x',
-      steps: 2, seconds: 600, hours: 0.2, amount: 50, aiCost: 1, reviewed: false, writeOff: false },
+      steps: 2, seconds: 600, hours: 0.2, amount: 50, aiCost: 1, confirmed: true, reviewed: false, writeOff: false },
   ];
   const req = buildPaymentRequest(entries, config, { email: 'client@example.com' });
   assert.strictEqual(req.included.length, 1); // unreviewed entry excluded
@@ -379,7 +396,8 @@ test('HTML statement embeds a Pay Now button when payUrl is given', () => {
   const { htmlInvoice } = require('../src/report');
   const config = { ...store.DEFAULT_CONFIG, rate: 250 };
   const entries = [{ id: 'x', date: '2026-07-10', client: 'Acme', matter: 'M', code: 'A103',
-    description: 'Work.', steps: 1, seconds: 600, hours: 0.2, amount: 50, aiCost: 0, reviewed: true, writeOff: false }];
+    description: 'Work.', steps: 1, seconds: 600, hours: 0.2, amount: 50, aiCost: 0,
+    confirmed: true, rate: 250, billed: null, reviewed: true, writeOff: false }];
   const html = htmlInvoice(entries, config, { payUrl: 'https://secure.lawpay.com/pages/f/operating?amount=5000' });
   assert.match(html, /class="paybtn"/);
   assert.match(html, /Pay Now — \$50\.00/);
@@ -486,6 +504,8 @@ test('dashboard server: entries, override, capture API', async () => {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
+    // Set a rate first so reviewing an entry snapshots a meaningful rate.
+    store.writeConfig({ ...store.readConfig(), rate: 100 });
     const page = await (await fetch(base + '/')).text();
     assert.match(page, /Matterproof/);
 
@@ -654,7 +674,10 @@ test('API validation: override hours bounded, log minutes capped, config numeric
     assert.strictEqual((await post('/api/override', { id: 'x', hours: 25 })).status, 400);
     const ok = await post('/api/override', { id: 'x', hours: 1.5, reviewed: 1 });
     assert.strictEqual(ok.status, 200);
-    assert.deepStrictEqual((await ok.json()).override, { reviewed: true, hours: 1.5 }); // booleans coerced
+    const okOverride = (await ok.json()).override;
+    assert.strictEqual(okOverride.reviewed, true); // booleans coerced
+    assert.strictEqual(okOverride.hours, 1.5);
+    assert.strictEqual(typeof okOverride.rateSnapshot, 'number'); // rate frozen at review time
     // /api/log: manual minutes in (0, 960]; NaN and 1e9 rejected.
     assert.strictEqual((await post('/api/log', { type: 'manual', minutes: 1e9, description: 'x' })).status, 400);
     assert.strictEqual((await post('/api/log', { type: 'manual', minutes: 'abc', description: 'x' })).status, 400);
@@ -679,13 +702,24 @@ test('applyOverride ignores non-finite/negative hours (defense in depth)', () =>
     { ts: '2026-07-15T10:06:00.000Z', type: 'stop', session: 's-nan' },
   ];
   const id = entryId('s-nan', '2026-07-15T10:00:00.000Z');
-  assert.strictEqual(buildEntries(events, config)[0].hours, 0.1);
-  // A poisoned override (hand-edited file, old bug) must not reach invoices.
+  // #17: an AI entry is non-billable until confirmed — hours default to zero.
+  const plain = buildEntries(events, config)[0];
+  assert.strictEqual(plain.hours, 0);
+  assert.strictEqual(plain.confirmed, false);
+  assert.strictEqual(plain.amount, 0);
+  // A poisoned override (hand-edited file, old bug) must not confirm the entry
+  // or mint a NaN/negative amount: an invalid hours value is ignored, so the
+  // entry stays unconfirmed and unbilled.
   for (const bad of ['abc', -5, NaN]) {
     const e = buildEntries(events, config, { [id]: { hours: bad } })[0];
-    assert.strictEqual(e.hours, 0.1);
-    assert.strictEqual(e.amount, 10);
+    assert.strictEqual(e.hours, 0);
+    assert.strictEqual(e.confirmed, false);
+    assert.strictEqual(e.amount, 0);
   }
+  // A VALID confirmation prices exactly.
+  const good = buildEntries(events, config, { [id]: { hours: 0.1 } })[0];
+  assert.strictEqual(good.hours, 0.1);
+  assert.strictEqual(good.amount, 10);
 });
 
 test('ledger files and data directory are written owner-only (0600/0700)', () => {
@@ -724,8 +758,10 @@ test('config CLI masks secrets unless --reveal', () => {
 // --- tamper-evident audit chains (@elias/audit wiring) ---
 require('./audit.test.js')(test);
 
-// --- #18 stopgap: client-facing exports disabled by default ---
-require('./exports-gate.test.js')(test);
+// --- Phase 4 (#23): confirmed-minutes billing, reviewed-only exports,
+//     mutually-exclusive billed marker, LEDES units, capturePrompts, JSONL,
+//     Clio OAuth hardening ---
+require('./phase4.test.js')(test);
 
 process.on('exit', () => {
   console.log(`\n${passed} tests passed${process.exitCode ? ' (with failures)' : ''}`);

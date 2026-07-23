@@ -44,6 +44,9 @@
   .desc { min-width: 22rem; }
   .editable { cursor: text; border-bottom: 1px dashed transparent; }
   .editable:hover { border-bottom-color: var(--muted); }
+  /* AI-estimated minutes are a SUGGESTION, never billable until confirmed (#17). */
+  .editable.unconfirmed { color: var(--muted); font-style: italic; border-bottom-color: var(--warn); }
+  .est { font-size: .68rem; color: var(--warn); text-transform: uppercase; letter-spacing: .04em; margin-left: .25rem; }
   .pill { border: 1px solid var(--line); border-radius: 999px; padding: .1rem .6rem;
           font-size: .75rem; background: none; white-space: nowrap; }
   .pill.on { border-color: var(--good); color: var(--good); font-weight: 600; }
@@ -92,7 +95,7 @@
     <label>Client <select id="client"><option value="">All clients</option></select></label>
     <button class="primary" id="refresh">Apply</button>
     <span class="spacer"></span>
-    <button id="reviewAll" title="Mark every visible entry as attorney-reviewed">Mark all reviewed</button>
+    <button id="reviewAll" title="Mark every visible entry as attorney-reviewed. Note: this does NOT confirm billable minutes — an AI entry stays non-billable until you enter its hours.">Mark all reviewed</button>
     <button data-x="txt">Timesheet</button>
     <button data-x="csv">CSV</button>
     <button data-x="ledes">LEDES 1998B</button>
@@ -132,8 +135,10 @@
   </div>
 
   <footer>
-    Hours are actual recorded activity rounded to billing increments — never time "saved."
-    Review each entry before billing (ABA Formal Op. 512). Data stays on this machine.
+    AI runtime is captured as provenance and cost only. A billable hour exists only when an
+    attorney enters/confirms the human minutes actually worked (the "est" figure is a starting
+    suggestion, never a bill). Only reviewed, confirmed, unbilled entries can reach a client, and
+    each bills once (ABA Formal Op. 512). Data stays on this machine.
   </footer>
 </main>
 <script>
@@ -163,6 +168,7 @@ async function load() {
     ${t.aiCost ? `<div><b>${money(t.aiCost)}</b><span>AI costs</span></div>` : ''}
     <div><b>${t.count}</b><span>entries</span></div>
     <div><b>${t.steps}</b><span>AI steps</span></div>
+    <div><b style="color:${t.unconfirmed ? 'var(--warn)' : 'var(--good)'}">${t.unconfirmed}</b><span>unconfirmed</span></div>
     <div><b style="color:${t.unreviewed ? 'var(--warn)' : 'var(--good)'}">${t.unreviewed}</b><span>unreviewed</span></div>`;
 
   const sel = $('#client');
@@ -180,7 +186,9 @@ async function load() {
       <td class="code">${esc(e.code)}</td>
       <td class="desc"><span class="editable" data-f="description">${esc(e.description)}</span></td>
       <td class="num">${e.steps || ''}</td>
-      <td class="num"><span class="editable" data-f="hours">${e.hours.toFixed(1)}</span></td>
+      <td class="num"><span class="editable ${e.confirmed ? '' : 'unconfirmed'}" data-f="hours"
+        title="${e.confirmed ? 'Attorney-confirmed billable hours' : 'AI estimate only — click to enter/confirm the human minutes actually billed (#17). Nothing bills until you do.'}"
+        >${(e.confirmed ? e.hours : (e.suggestedHours || 0)).toFixed(1)}</span>${e.confirmed ? '' : '<span class="est">est</span>'}</td>
       <td class="num">${money(e.amount)}</td>
       <td><button class="pill ${e.writeOff ? 'nc' : ''}" data-f="writeOff">${e.writeOff ? 'No charge' : 'Billable'}</button></td>
       <td><button class="pill ${e.reviewed ? 'on' : ''}" data-f="reviewed">${e.reviewed ? '✓ Reviewed' : 'Review'}</button></td>

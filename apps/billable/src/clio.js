@@ -15,31 +15,60 @@
 // Push rules: only entries that are attorney-reviewed, not written off, not
 // already pushed, and whose client/matter is mapped to a Clio matter id.
 
+const crypto = require('crypto');
 const store = require('./store');
 const { keyOf } = require('./economics');
+const { isBilled } = require('./client-billing');
 
 const CLIO_BASE = process.env.CLIO_BASE_URL || 'https://app.clio.com';
-const REDIRECT_URI = 'http://127.0.0.1:53682/callback';
+const CALLBACK_PORT = 53682;
+const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}/callback`;
+const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000; // don't leave the loopback server open forever
 
-function authUrl(config) {
+function base64url(buf) {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// Build a hardened authorization request: a random `state` (CSRF defense) and a
+// PKCE verifier/challenge pair (S256) so an intercepted authorization code is
+// useless without the verifier this process holds. Returns everything the
+// caller must retain to validate the callback and complete the exchange.
+function buildAuthRequest(config) {
+  const state = base64url(crypto.randomBytes(24));
+  const codeVerifier = base64url(crypto.randomBytes(48)); // 43-128 chars per RFC 7636
+  const codeChallenge = base64url(crypto.createHash('sha256').update(codeVerifier).digest());
   const p = new URLSearchParams({
     response_type: 'code',
     client_id: config.clioClientId,
     redirect_uri: REDIRECT_URI,
+    state,
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
   });
-  return `${CLIO_BASE}/oauth/authorize?${p}`;
+  return { url: `${CLIO_BASE}/oauth/authorize?${p}`, state, codeVerifier, codeChallenge };
+}
+
+// Back-compat shim: the bare authorize URL (no PKCE/state). Prefer
+// buildAuthRequest for the real connect flow.
+function authUrl(config) {
+  return buildAuthRequest(config).url;
 }
 
 async function exchangeToken(config, params, fetchImpl = fetch) {
+  // Map the caller's camelCase codeVerifier to the OAuth `code_verifier` field
+  // and never leak the camelCase key into the request body.
+  const { codeVerifier, ...rest } = params;
+  const form = {
+    client_id: config.clioClientId,
+    client_secret: config.clioClientSecret,
+    redirect_uri: REDIRECT_URI,
+    ...rest,
+  };
+  if (codeVerifier) form.code_verifier = codeVerifier;
   const res = await fetchImpl(`${CLIO_BASE}/oauth/token`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: config.clioClientId,
-      client_secret: config.clioClientSecret,
-      redirect_uri: REDIRECT_URI,
-      ...params,
-    }).toString(),
+    body: new URLSearchParams(form).toString(),
   });
   if (!res.ok) throw new Error(`Clio token exchange failed (${res.status}): ${await res.text()}`);
   const tok = await res.json();
@@ -51,21 +80,48 @@ async function exchangeToken(config, params, fetchImpl = fetch) {
 }
 
 // Loopback OAuth: open the printed URL, Clio redirects the browser back to
-// 127.0.0.1:53682 with the authorization code.
-function waitForCode(port = 53682) {
+// 127.0.0.1 with the authorization code. Hardened: the returned `state` MUST
+// match what we sent (CSRF), and the wait is bounded by a timeout so a browser
+// that never returns doesn't leave the callback server (and the CLI) hanging.
+function waitForCode({ port = CALLBACK_PORT, expectedState, timeoutMs = CALLBACK_TIMEOUT_MS, onListening } = {}) {
   const http = require('http');
   return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn, arg) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { server.close(); } catch { /* already closing */ }
+      fn(arg);
+    };
+    const timer = setTimeout(
+      () => finish(reject, new Error(`Clio authorization timed out after ${Math.round(timeoutMs / 1000)}s`)),
+      timeoutMs
+    );
     const server = http.createServer((req, res) => {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname !== '/callback') return res.end();
       const code = url.searchParams.get('code');
-      res.writeHead(200, { 'content-type': 'text/html' });
-      res.end('<p>Matterproof is connected to Clio. You can close this tab.</p>');
-      server.close();
-      code ? resolve(code) : reject(new Error(url.searchParams.get('error') || 'no code returned'));
+      const state = url.searchParams.get('state');
+      // Validate state BEFORE trusting the code — a mismatch means the callback
+      // was not initiated by this process (CSRF / forged redirect).
+      if (expectedState != null && state !== expectedState) {
+        res.writeHead(400, { 'content-type': 'text/html' });
+        res.end('<p>Authorization state did not match. Please retry from the CLI.</p>');
+        return finish(reject, new Error('Clio authorization state mismatch — request rejected'));
+      }
+      res.writeHead(code ? 200 : 400, { 'content-type': 'text/html' });
+      res.end(code
+        ? '<p>Matterproof is connected to Clio. You can close this tab.</p>'
+        : '<p>No authorization code returned.</p>');
+      code
+        ? finish(resolve, code)
+        : finish(reject, new Error(url.searchParams.get('error') || 'no code returned'));
     });
-    server.once('error', reject);
-    server.listen(port, '127.0.0.1');
+    server.once('error', (err) => finish(reject, err));
+    server.listen(port, '127.0.0.1', () => {
+      if (onListening) onListening(server.address().port);
+    });
   });
 }
 
@@ -73,10 +129,15 @@ async function connect(config, fetchImpl = fetch) {
   if (!config.clioClientId || !config.clioClientSecret) {
     throw new Error('Set clioClientId and clioClientSecret first (billable config clioClientId ...)');
   }
+  const authReq = buildAuthRequest(config);
   console.log('Open this URL in your browser and authorize Matterproof:\n');
-  console.log('  ' + authUrl(config) + '\n');
-  const code = await waitForCode();
-  const clio = await exchangeToken(config, { grant_type: 'authorization_code', code }, fetchImpl);
+  console.log('  ' + authReq.url + '\n');
+  const code = await waitForCode({ expectedState: authReq.state });
+  const clio = await exchangeToken(
+    config,
+    { grant_type: 'authorization_code', code, codeVerifier: authReq.codeVerifier },
+    fetchImpl
+  );
   store.writeConfig({ ...config, clio });
   return clio;
 }
@@ -119,15 +180,20 @@ async function listMatters(config, fetchImpl = fetch) {
   }));
 }
 
-// Returns {pushed, skipped:{unreviewed, unmapped, writeOff, alreadyPushed}}.
+// Returns {pushed, skipped:{unreviewed, unconfirmed, unmapped, writeOff, alreadyPushed}}.
+// An entry is pushable only when reviewed, built on attorney-confirmed minutes
+// (#17), not written off, mapped to a Clio matter, and not already billed to
+// ANY destination (#18 — mutual exclusivity, so a LawPay- or LEDES-billed entry
+// is skipped here too).
 function classifyForPush(entries, config, overrides) {
   const ready = [];
-  const skipped = { unreviewed: 0, unmapped: 0, writeOff: 0, alreadyPushed: 0 };
+  const skipped = { unreviewed: 0, unconfirmed: 0, unmapped: 0, writeOff: 0, alreadyPushed: 0 };
   for (const e of entries) {
     const clioMatterId = (config.clioMatters || {})[keyOf(e.client, e.matter)];
-    if (overrides[e.id] && overrides[e.id].clioId) skipped.alreadyPushed++;
+    if (isBilled(overrides[e.id]) || e.billed) skipped.alreadyPushed++;
     else if (e.writeOff) skipped.writeOff++;
     else if (!e.reviewed) skipped.unreviewed++;
+    else if (!e.confirmed || !(e.hours > 0)) skipped.unconfirmed++;
     else if (!clioMatterId) skipped.unmapped++;
     else ready.push({ entry: e, clioMatterId });
   }
@@ -164,4 +230,7 @@ async function pushEntries(entries, config, overrides, { dryRun = false, fetchIm
   return { results, skipped };
 }
 
-module.exports = { authUrl, connect, listMatters, pushEntries, classifyForPush, activityBody, exchangeToken };
+module.exports = {
+  authUrl, buildAuthRequest, connect, listMatters, pushEntries,
+  classifyForPush, activityBody, exchangeToken, waitForCode,
+};
