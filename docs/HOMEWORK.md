@@ -42,7 +42,7 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 6 (epic #25) — **PR 13: DURABLE STORAGE (the last sub-item of the
+**Session that just ran:** Phase 6 (epic #25) — **PR 13 (#48): DURABLE STORAGE (the last sub-item of the
 migrations/roles/storage box).** Replaced the JSON-per-company file store with **SQLite** via the built-in
 `node:sqlite`. Branch `claude/sqlite-durable-storage-iqvhdx` off latest `main` (`5a94a6f`); PR references #25 as
 `Refs #25` (the epic was already closed by the owner — this PR completes its final checkbox, and the box now

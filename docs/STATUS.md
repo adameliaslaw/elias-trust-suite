@@ -8,7 +8,7 @@
 > MERGED (#47, squashed to `main` as `5a94a6f`): schema-version + migration runner (`lib/migrations.js`: every
 > store doc carries `schemaVersion`, ordered forward migrations run + atomic write-back on load) AND the 3-role
 > household identity model (owner / bookkeeper / read-only; the shared password is the implicit default owner,
-> named principals in `global.json`, enforced in the dispatcher auth gate, surfaced through `audit.actor`). PR 13
+> named principals in `global.json`, enforced in the dispatcher auth gate, surfaced through `audit.actor`). PR 13 (#48)
 > open (this session, HUMAN REVIEW — money-at-rest, auto-merge OFF): DURABLE STORAGE — the JSON-per-company file
 > store is replaced by SQLite (`lib/sqlite.js`, via the built-in `node:sqlite`; each company is one JSON doc in a
 > `company` row, household in a `global` row). The two #24 boundaries were re-derived, not ported: secrets-at-rest
@@ -129,7 +129,7 @@ The tests are valuable but largely do not cover these paths.
 | 3 — Reconciliation lifecycle + retention | #22 | ✅ Done (#14 closed) |
 | 4 — Redesign Matterproof billing | #23 | ✅ Done (#17, #18 fixed) |
 | 5 — Data + audit hardening | #24 | ✅ Done — PR #34 merged (8/8; Clio retry dedup + books transactional outbox) |
-| 6 — Books role + `packages/rules` | #25 | ✅ **Done** (exit criteria met; epic closed by owner). PR 1 MERGED (#36): `@elias/rules` + payroll retrofit + tax fixes. PR 2–11 MERGED (#37–#46): full `server.js` split (all 11 route groups in `lib/routes/*`). PR 12 MERGED (#47, `5a94a6f`): schema-version + migration runner + 3-role household identity. **PR 13 open (this session, human review): durable storage — SQLite (`node:sqlite`) replaces the JSON file store; secrets-at-rest + transactional outbox re-derived against SQLite transactions.** All three sub-items (migrations + roles + durable storage) done → the migrations/roles/storage box closes. Remaining rules-domain migrations (sales-tax/LEDES/1040) tracked as correctness follow-ups, not #25 blockers. |
+| 6 — Books role + `packages/rules` | #25 | ✅ **Done** (exit criteria met; epic closed by owner). PR 1 MERGED (#36): `@elias/rules` + payroll retrofit + tax fixes. PR 2–11 MERGED (#37–#46): full `server.js` split (all 11 route groups in `lib/routes/*`). PR 12 MERGED (#47, `5a94a6f`): schema-version + migration runner + 3-role household identity. **PR 13 (#48) open (this session, human review): durable storage — SQLite (`node:sqlite`) replaces the JSON file store; secrets-at-rest + transactional outbox re-derived against SQLite transactions.** All three sub-items (migrations + roles + durable storage) done → the migrations/roles/storage box closes. Remaining rules-domain migrations (sales-tax/LEDES/1040) tracked as correctness follow-ups, not #25 blockers. |
 | 7 — Suite integration + `packages/auth` | #26 | ⬜ **Unblocked** (6 done) — natural home for the per-principal identity + role work started in books |
 | 8 — Release engineering | #27 | ⬜ Parallelizable; finalize last |
 
@@ -149,7 +149,7 @@ The tests are valuable but largely do not cover these paths.
   default owner; named principals in `global.json` (seeded empty by global schema migration v2); enforced in the
   dispatcher auth gate; actor surfaced through `audit.actor`. Role-enforcement tested (`test/roles.test.js`,
   30 checks).
-- books durable storage on SQLite (Phase 6 / #25, PR 13): the JSON-per-company file store is replaced by
+- books durable storage on SQLite (Phase 6 / #25, PR 13 / #48): the JSON-per-company file store is replaced by
   `data/books.db` via the built-in `node:sqlite` (`lib/sqlite.js`) — **zero runtime dependency, no node-gyp**
   (better-sqlite3 rejected; Node floor moved 20→22.5, CI is 24). Each company is one JSON doc in a `company` row,
   household in a single `global` row; the in-memory model is unchanged so all handlers + the 252-check smoke suite
@@ -181,7 +181,7 @@ bill-tracker migration).
 payroll retrofitted. Remaining Phase 6 domains to migrate into it in later PRs: sales-tax rate + ST-50/51
 calendar, LEDES units, and the 1040 planner brackets.
 
-**Books durable-storage direction (Phase 6 / #25): DONE (PR 13, this session).** SQLite (built-in `node:sqlite`)
+**Books durable-storage direction (Phase 6 / #25): DONE (PR 13 / #48, this session).** SQLite (built-in `node:sqlite`)
 replaced the JSON-per-company file store while there was no real data. The #24 secrets-at-rest + transactional-
 outbox boundaries were re-derived against SQLite transactions (not mechanically ported): secrets seal before the
 doc is written; the outbox is a real table committed in one transaction. The engine-agnostic `schemaVersion`
