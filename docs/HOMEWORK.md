@@ -41,31 +41,34 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 6 (epic #25) — **PR 2**: the first slice of the `server.js` split. Branch
-`claude/phase6-server-split-0hil0o` off latest `main` (`361e900`); PR **open, referencing #25** (`Refs #25`,
-not `Fixes` — the epic still has structural items left). **Squash auto-merge ON** — this is a pure structural
-refactor fully covered by the 252-check smoke suite (NOT money/tax logic), so per CONTRIBUTING it may land on
-green CI without waiting on the owner. Checks no new #25 boxes on its own; the "split `server.js`" box stays
-open until the whole file is decomposed across follow-up PRs.
+**Session that just ran:** Phase 6 (epic #25) — **PR 3**: the second slice of the `server.js` split. Branch
+`claude/phase6-expenses-extraction-6fpvdf` off latest `main` (`298d948`); PR **open, referencing #25**
+(`Refs #25`, not `Fixes` — the epic still has structural items left). Pure structural refactor fully covered by
+the 252-check smoke suite (NOT money/tax logic), so per CONTRIBUTING it may land on green CI. **Repo auto-merge
+is DISABLED**, so this session merged it by hand after the `ci` workflow concluded success (squash). Checks no
+new #25 boxes on its own; the "split `server.js`" box stays open until the whole file is decomposed across
+follow-up PRs.
 
-**Context — PR 1 is MERGED.** Phase 6 PR 1 (`@elias/rules` moat + payroll retrofit + four payroll/tax
-correctness fixes) landed as **PR #36**, squash-merged to `main` as **`361e900`**. #25 has **6/8 boxes**
+**Context — PR 1 + PR 2 are MERGED.** PR 1 (`@elias/rules` moat + payroll retrofit + four payroll/tax
+correctness fixes) landed as **PR #36** → `main` **`361e900`**. PR 2 (sales-tax + reports route group extracted
+into `apps/books/lib/routes/reports.js`) landed as **PR #37** → `main` **`298d948`**. #25 has **6/8 boxes**
 checked and stays OPEN for the two structural items (server split; schema migrations/roles/durable storage).
-The `@elias/rules` moat, the salestax snapshot, the payroll net guard + §402(g) cap, NACHA 220, and the NIIT
-comment fix are all on `main` now — see the closed-item history in STATUS.md.
 
 **What landed this session (behavior-preserving, covered by the existing smoke suite):**
-- **Began the incremental `server.js` split.** Extracted the **sales-tax + reporting** route group —
-  `GET /api/salestax`, `POST /api/salestax/remit`, `GET /api/dashboard`, `GET /api/reports/pnl`,
-  `GET /api/reports/aging` — verbatim into **`apps/books/lib/routes/reports.js`**, exported as
-  `(route, deps) => { route(...) }`. `server.js` requires it **in place** (same source location the handlers
-  had), so route-registration order is unchanged; the handlers close over an explicit `deps` object
-  (`sendJSON, readBody, badRequest, inRange, round2, uid, todayISO, decorateInvoice, commit, audit, salestax,
-  money`) instead of the monolith's module scope. `server.js` 2218 → 2092 lines.
-- **No logic change.** The `salestax.remitted` mutation still goes through `store.commit` (transactional
-  outbox); the reports still read income via `salestax.paymentIncomeParts` (honoring the payment tax snapshot)
-  and money math via `@elias/money`. The 252-check `smoke.test.js` suite is **identical before/after** and
-  still passes — it is the characterization safety net for this slice.
+- **Continued the incremental `server.js` split.** Extracted the **expenses** route group — the 7 handlers
+  `GET /api/expenses`, `POST /api/expenses`, `PUT /api/expenses/:id`, `DELETE /api/expenses/:id`,
+  `GET /api/vendors/1099`, `POST /api/vendors/1099`, and `POST`/`GET`/`DELETE /api/expenses/:id/receipt` —
+  verbatim into **`apps/books/lib/routes/expenses.js`**, exported as `(route, deps) => {...}`. `server.js`
+  requires it **in place**, so route-registration order is unchanged; the handlers close over an explicit
+  `deps` object (`sendJSON, notFound, badRequest, readBody, uid, round2, todayISO, commit, save, audit,
+  receipts, money`) instead of the monolith's module scope. The expense-only `validExpense` validator **moved
+  into the module** with the handlers (it had no other callers). `server.js` 2092 → 1965 lines.
+- **Mixed persistence preserved exactly (do NOT "fix" this).** The money mutations (expense
+  create/update/delete) commit through `store.commit` (transactional outbox); the **non-money** paths (1099
+  vendor tracking `POST /api/vendors/1099`, receipt attach `POST .../receipt`, receipt delete `DELETE
+  .../receipt`) call `save(db)` **directly** — no audit event, because they touch no money. That asymmetry is
+  intentional and was carried over verbatim. The 252-check `smoke.test.js` suite is **identical before/after**
+  and still passes — the characterization safety net for this slice.
 
 **The extraction pattern (follow it for the next group):**
 1. Create `apps/books/lib/routes/<group>.js` exporting `module.exports = function (route, deps) { const {...} = deps; route(method, pattern, handler); ... }`.
@@ -77,12 +80,16 @@ comment fix are all on `main` now — see the closed-item history in STATUS.md.
 4. `npm run typecheck` + `npm test --workspace apps/books` must stay green with the **same 252 count**.
 
 **Next session → continue the split (own PRs, one cohesive group each), then the other structural item:**
-- **Next split slices.** Remaining route groups by handler count (see the `route(` map in `server.js`):
-  payroll 19, bank 17, household 8, invoices 7, expenses 7, time 6, recurring 4, customers 4, plus
-  auth/companies/settings and the audit/backup tail. Suggested order: another low-risk group (**invoices** or
-  **expenses**) next to lock the pattern in, then the big ones (**payroll**, **bank**). Watch for handlers
-  that reference module-level helpers you haven't passed yet (`scheduleRecurring`, `secureAttr`,
-  `PUBLIC_ROUTES`, the plaid/csv/receipts/deposits/nacha/filings requires) — thread them through `deps`.
+- **Next split slices.** Two groups are now extracted (reports, expenses). Remaining route groups by handler
+  count (see the `route(` map in `server.js`): payroll 19, bank 17, household 8, invoices 7, time 6,
+  recurring 4, customers 4, plus auth/companies/settings and the audit/backup tail. Suggested next: **invoices**
+  or **customers** to keep the pattern warm, then the big ones (**payroll**, **bank**). **Watch out for
+  `invoices`:** it drags in the shared `createInvoice` constructor (used by the recurring scheduler that runs
+  at boot, plus the sales-import and time-invoice routes), so it is NOT self-contained the way expenses was —
+  give it a dedicated pass and thread `createInvoice` (or leave it in server.js and pass it through `deps`).
+  Watch generally for handlers referencing module-level helpers you haven't passed yet (`scheduleRecurring`,
+  `secureAttr`, `PUBLIC_ROUTES`, the plaid/csv/receipts/deposits/nacha/filings requires) — thread them through
+  `deps`.
 - **Schema migrations / roles / durable storage before any multi-user deploy** (checklist item). Books is a
   single-file JSON store today; design a migration/versioning story + role model. Gates multi-user.
 - **Migrate more domains into `@elias/rules`:** sales-tax rate + ST-50/51 calendar, LEDES units, the 1040
