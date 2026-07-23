@@ -516,82 +516,18 @@ route('DELETE', '/api/recurring/:id', (req, res, db, params) => {
 });
 
 // -- billable time --
-route('GET', '/api/time', (req, res, db, params, query) => {
-  const status = query.get('status') || 'all';
-  const customerId = query.get('customerId');
-  let list = db.timeEntries.map(t => {
-    const c = db.customers.find(x => x.id === t.customerId);
-    return { ...timetracking.decorateEntry(t), customerName: c ? (c.company || c.name) : '(deleted)' };
-  });
-  if (status !== 'all') list = list.filter(t => t.status === status);
-  if (customerId) list = list.filter(t => t.customerId === customerId);
-  list.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
-  sendJSON(res, 200, list);
-});
-route('GET', '/api/time/wip', (req, res, db) => sendJSON(res, 200, timetracking.wipByCustomer(db)));
-route('POST', '/api/time', async (req, res, db) => {
-  const b = await readBody(req);
-  const { error, entry } = timetracking.sanitizeEntry(b, db);
-  if (error) return badRequest(res, error);
-  db.timeEntries.push(entry);
-  await commit(db, req.companyId, 'time_entry.created', {
-    entryId: entry.id, customerId: entry.customerId,
-    hours: String(entry.hours), rateCents: audit.centsStr(entry.rate), actor: audit.actor(req)
-  });
-  sendJSON(res, 201, timetracking.decorateEntry(entry));
-});
-route('PUT', '/api/time/:id', async (req, res, db, params) => {
-  const idx = db.timeEntries.findIndex(t => t.id === params.id);
-  if (idx === -1) return notFound(res);
-  if (db.timeEntries[idx].invoiceId) return badRequest(res, 'This entry is on an invoice. Delete the invoice to release it.');
-  const b = await readBody(req);
-  const { error, entry } = timetracking.sanitizeEntry(b, db, db.timeEntries[idx]);
-  if (error) return badRequest(res, error);
-  db.timeEntries[idx] = entry;
-  await commit(db, req.companyId, 'time_entry.updated', {
-    entryId: entry.id, customerId: entry.customerId,
-    hours: String(entry.hours), rateCents: audit.centsStr(entry.rate), actor: audit.actor(req)
-  });
-  sendJSON(res, 200, timetracking.decorateEntry(entry));
-});
-route('DELETE', '/api/time/:id', async (req, res, db, params) => {
-  const idx = db.timeEntries.findIndex(t => t.id === params.id);
-  if (idx === -1) return notFound(res);
-  if (db.timeEntries[idx].invoiceId) return badRequest(res, 'This entry is on an invoice. Delete the invoice to release it.');
-  const removed = db.timeEntries[idx];
-  db.timeEntries.splice(idx, 1);
-  await commit(db, req.companyId, 'time_entry.deleted', {
-    entryId: removed.id, customerId: removed.customerId,
-    hours: String(removed.hours), rateCents: audit.centsStr(removed.rate), actor: audit.actor(req)
-  });
-  sendJSON(res, 200, { ok: true });
-});
-// Roll a customer's unbilled time (optionally a subset by entryIds) into a
-// draft invoice, one line per entry.
-route('POST', '/api/time/invoice', async (req, res, db) => {
-  const b = await readBody(req);
-  const entries = timetracking.billableEntries(db, b.customerId, b.entryIds);
-  if (!entries.length) return badRequest(res, 'No unbilled time for that customer');
-  let inv;
-  try {
-    inv = createInvoice(db, {
-      customerId: b.customerId,
-      date: b.date || todayISO(),
-      dueDate: b.dueDate || recurring.addDaysIso(b.date || todayISO(), db.settings.defaultTermsDays || 30),
-      items: timetracking.invoiceItems(entries),
-      draft: true,
-      notes: b.notes || ''
-    });
-  } catch (e) {
-    return badRequest(res, e.message);
-  }
-  for (const t of entries) t.invoiceId = inv.id;
-  await commit(db, req.companyId, 'invoice.created', {
-    invoiceId: inv.id, clientId: inv.customerId,
-    totalCents: audit.centsStr(decorateInvoice(inv).total),
-    source: 'time', actor: audit.actor(req)
-  });
-  sendJSON(res, 201, { ...decorateInvoice(inv), entriesBilled: entries.length });
+// Extracted verbatim into lib/routes/time.js (Phase 6 / #25, fourth slice of the
+// server split), wired in place so route-registration order is unchanged. A time
+// entry carries hours + rate, so every mutation here is a money path: each
+// commits (crash-atomic audit), and POST /api/time/invoice commits the rolled-up
+// invoice.created event — do NOT convert to save(db). All time logic lives in the
+// shared lib/timetracking module (no time-only validator to move); createInvoice
+// and decorateInvoice stay shared and are threaded through deps, not moved.
+require('./lib/routes/time')(route, {
+  sendJSON, notFound, badRequest, readBody,
+  todayISO, commit,
+  createInvoice, decorateInvoice,
+  timetracking, recurring, audit
 });
 
 // -- expenses + 1099-NEC vendor tracking + receipt attachments --
