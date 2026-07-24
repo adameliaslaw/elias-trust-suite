@@ -5,7 +5,8 @@
 > Canonical plan: [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md) · Findings narrative:
 > [EVALUATION.md](EVALUATION.md) · Backlog: GitHub Issues **#11–#27**.
 > Last updated: 2026-07-24 — **Phase 7 (#26) IN PROGRESS: `@elias/auth` MERGED (PR #49 → `63ea43e`); `@elias/entities`
-> canonical firm/client/matter/user IDs built this session. Phase 6 (#25) is
+> MERGED (PR #50 → `91731ef`); this session wired the **attorney sign-off gate onto the billable client invoice**
+> (PR C, open). Phase 6 (#25) is
 > fully CLOSED — its last PR is MERGED: PR 13 (#48) squash-merged to `main` as `31771a9` (durable storage on
 > SQLite via built-in `node:sqlite`; secrets-at-rest + transactional outbox re-derived against SQLite
 > transactions).** Phase 7's first PR is **MERGED: PR A (#49) squash-merged to `main` as `63ea43e`** —
@@ -22,7 +23,17 @@
 > injected; the principals route validates via shared `isRole`. All books suites unchanged and green (252 smoke +
 > 30 roles + …). Earlier Phase-6 PRs (all MERGED): PR 12 (#47, `5a94a6f`) migration runner + 3-role identity;
 > PR 1 (#36, `361e900`) `packages/rules` moat + payroll retrofit + tax fixes; PR 2–11 (#37–#46) the incremental
-> server split.**
+> server split. Phase 7's second PR is **MERGED: PR B (#50 → `91731ef`)** — `@elias/entities` (canonical
+> firm/client/matter/user IDs + `EntityRegistry` + role reconciliation; books consumes it). **This session (PR C,
+> open):** the first integration of the sign-off primitive — the **billable client invoice is now gated on a
+> content-addressed attorney sign-off**. `apps/billable/src/signoff.js` assembles the exact invoice for one
+> (client, matter) as an `@elias/auth` `ComplianceOutput` keyed on the canonical `@elias/entities` matter id
+> (`deriveEntityId('matter', client, matter)`); `report --format ledes --bill` refuses to stamp the
+> mutually-exclusive billed marker unless a matching, APPROVED `reviewSignoff` is on record, and a new
+> `billable signoff <client> <matter> --attorney …` command records it (persisted in `signoffs.json`, keyed by
+> canonical id, with a `compliance.signoff` event chained into billable's tamper-evident trail via
+> `signoffAuditEvent`). Editing the invoice after sign-off changes the content hash, so a stale approval can never
+> cover mutated numbers. 6 new reproducing tests (billable 56 → 62).**
 > Phase 5 (#24) ✅ done + MERGED (PR #34); Phase 0 (#19) ✅ ratified
 > (D1=C, D2=B, D3=C split-by-domain, D4=B). Phase 5 = data + audit hardening; all 8 checklist
 > items landed with reproducing tests: fail-closed iolta verify against the recorded head + surfaced offline
@@ -133,7 +144,7 @@ The tests are valuable but largely do not cover these paths.
 | 4 — Redesign Matterproof billing | #23 | ✅ Done (#17, #18 fixed) |
 | 5 — Data + audit hardening | #24 | ✅ Done — PR #34 merged (8/8; Clio retry dedup + books transactional outbox) |
 | 6 — Books role + `packages/rules` | #25 | ✅ **Done** (exit criteria met; epic closed by owner). PR 1 MERGED (#36): `@elias/rules` + payroll retrofit + tax fixes. PR 2–11 MERGED (#37–#46): full `server.js` split (all 11 route groups in `lib/routes/*`). PR 12 MERGED (#47, `5a94a6f`): schema-version + migration runner + 3-role household identity. **PR 13 MERGED (#48, `31771a9`): durable storage — SQLite (`node:sqlite`) replaces the JSON file store; secrets-at-rest + transactional outbox re-derived against SQLite transactions.** All three sub-items (migrations + roles + durable storage) done → the migrations/roles/storage box closed. Remaining rules-domain migrations (sales-tax/LEDES/1040) tracked as correctness follow-ups, not #25 blockers. |
-| 7 — Suite integration + `packages/auth` | #26 | 🟨 **In progress** — PR A MERGED (#49, `63ea43e`): **`@elias/auth` built** (shared identity core: password/sessions/throttle/roles/cookies + attorney sign-off; 31 tests) and books retrofitted to consume it. PR B (this session): **`@elias/entities` built** — canonical firm/client/matter/user ID model (typed prefixed opaque IDs + parse/format/validate + `EntityRegistry` cross-app lookup), the shared identity layer the end-to-end workflow references. Remaining #26 checklist: the audited attorney review flow wired into each app's compliance outputs, iolta/billable auth retrofit, a suite nav shell + home, the end-to-end Matterproof→invoice→payment→books workflow, and surface-trio parity. |
+| 7 — Suite integration + `packages/auth` | #26 | 🟨 **In progress** — PR A MERGED (#49, `63ea43e`): **`@elias/auth` built** (shared identity core: password/sessions/throttle/roles/cookies + attorney sign-off; 31 tests) and books retrofitted to consume it. PR B MERGED (#50, `91731ef`): **`@elias/entities` built** — canonical firm/client/matter/user ID model (typed prefixed opaque IDs + parse/format/validate + `EntityRegistry` cross-app lookup + role reconciliation); books consumes it. PR C (this session, open): **attorney sign-off wired into the billable client invoice** — `report --format ledes --bill` is gated on a content-addressed `reviewSignoff` keyed on the canonical matter id, with a `billable signoff` command + a `compliance.signoff` audit event (6 tests, billable 56→62). Remaining #26 checklist: the same sign-off gate on the iolta reconciliation packet, iolta/billable auth retrofit, a suite nav shell + home, the end-to-end Matterproof→invoice→payment→books workflow, and surface-trio parity. |
 | 8 — Release engineering | #27 | ⬜ Parallelizable; finalize last |
 
 ## Done (real, keep)
@@ -159,6 +170,14 @@ The tests are valuable but largely do not cover these paths.
   owner/bookkeeper/read-only, resolving the fork the survey flagged). Zero runtime deps; 50 tests. books consumes
   it (`lib/entities.js` adapter maps company→firm / customer→client / principal→user ids; `GET /api/companies`
   now surfaces each firm's `canonicalId`).
+- billable client-invoice attorney sign-off gate (Phase 7 / #26, PR C): `apps/billable/src/signoff.js` assembles
+  the exact LEDES invoice for one (client, matter) as an `@elias/auth` `ComplianceOutput` keyed on the canonical
+  `@elias/entities` matter id (`deriveEntityId('matter', client, matter)`). `report --format ledes --bill` is gated
+  on a matching, **approved**, content-addressed `reviewSignoff` (`assertInvoiceSignedOff`) — an unsigned,
+  rejected, or stale-signed invoice can't be billed; editing the invoice after sign-off invalidates it. The
+  `billable signoff <client> <matter> --attorney …` command records the decision (`signoffs.json`, keyed by
+  canonical id) and chains a `compliance.signoff` event into the tamper-evident trail via `signoffAuditEvent`.
+  6 reproducing tests (`test/signoff.test.js`); billable 56 → 62.
 - `apps/books` ← quickbucks; `apps/iolta` ← IOLTA-Reconciliation; `apps/billable` ← Billable.ai —
   all migrated, money + audit wired at the calc layer.
 - books schema-version + migration runner (`apps/books/lib/migrations.js`, Phase 6 / #25): every store file
@@ -195,10 +214,11 @@ The tests are valuable but largely do not cover these paths.
 
 `packages/auth` (Phase 7 / #26) — ✅ **built + MERGED** (PR #49 → `63ea43e`; the per-principal identity + 3-role
 model started in books is lifted into `@elias/auth`; books consumes it). `packages/entities` (Phase 7 / #26) —
-✅ **now built** (canonical firm/client/matter/user IDs + `EntityRegistry` + role reconciliation; books consumes
-it). Still to do under #26: wire the attorney sign-off primitive into iolta + billable compliance outputs;
-retrofit iolta + billable auth onto `@elias/auth`; a suite nav shell + home; the end-to-end workflow; surface-trio
-parity. · `packages/plaid` (deferred with bill-tracker migration).
+✅ **built + MERGED** (PR #50 → `91731ef`; canonical firm/client/matter/user IDs + `EntityRegistry` + role
+reconciliation; books consumes it). Still to do under #26: wire the attorney sign-off into the **iolta**
+reconciliation packet (the **billable** client invoice is now gated — PR C, this session); retrofit iolta +
+billable auth onto `@elias/auth`; a suite nav shell + home; the end-to-end workflow; surface-trio parity. ·
+`packages/plaid` (deferred with bill-tracker migration).
 `packages/rules` (`@elias/rules`) now **built** (Phase 6 / #25): versioned, effective-date-keyed, cited;
 payroll retrofitted. Remaining Phase 6 domains to migrate into it in later PRs: sales-tax rate + ST-50/51
 calendar, LEDES units, and the 1040 planner brackets.

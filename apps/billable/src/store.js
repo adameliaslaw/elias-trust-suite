@@ -42,6 +42,14 @@ function auditPath() {
   return path.join(homeDir(), 'audit.jsonl');
 }
 
+// Attorney sign-offs on client invoices (Phase 7 / #26), keyed by the canonical
+// @elias/entities matter id. Kept outside the append-only ledger (like
+// overrides) — the raw activity record stays evidence-grade; the sign-off is a
+// separate, audited attestation.
+function signoffsPath() {
+  return path.join(homeDir(), 'signoffs.json');
+}
+
 const DEFAULT_CONFIG = {
   timekeeper: 'Claude (AI assistant)',
   timekeeperId: 'AI1', // LEDES timekeeper id
@@ -210,6 +218,36 @@ function markBilled(id, destination, reference) {
   });
 }
 
+// Read the persisted sign-offs map (canonical matter id -> Signoff record).
+function readSignoffs() {
+  try {
+    return JSON.parse(fs.readFileSync(signoffsPath(), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/** The recorded sign-off for a canonical matter id, or null. */
+function readSignoff(matterId) {
+  return readSignoffs()[matterId] || null;
+}
+
+// Persist an attorney sign-off keyed by canonical matter id and chain its
+// compliance.signoff event into the tamper-evident audit trail. The stored
+// record is the single source the billing gate consults; the audit event is
+// the immutable proof it happened. Latest sign-off per matter wins (a re-sign
+// after an edit overwrites a now-stale one) — the audit chain retains every
+// signature, so the history is never lost.
+function recordSignoff(matterId, signoff, event) {
+  const all = readSignoffs();
+  all[matterId] = signoff;
+  ensureHome();
+  fs.writeFileSync(signoffsPath(), JSON.stringify(all, null, 2) + '\n', { mode: 0o600 });
+  tightenPerms(signoffsPath());
+  audit.appendSemantic(auditPath(), ledgerPath(), event.type, event.payload);
+  return signoff;
+}
+
 function matterFor(config, cwd) {
   if (cwd) {
     // Longest-prefix match so nested projects resolve to the most specific matter.
@@ -235,6 +273,7 @@ module.exports = {
   configPath,
   overridesPath,
   auditPath,
+  signoffsPath,
   DEFAULT_CONFIG,
   readConfig,
   writeConfig,
@@ -244,5 +283,8 @@ module.exports = {
   writeOverride,
   appendClioIntent,
   markBilled,
+  readSignoffs,
+  readSignoff,
+  recordSignoff,
   matterFor,
 };

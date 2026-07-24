@@ -887,6 +887,11 @@ require('./audit.test.js')(test);
 //     Clio OAuth hardening ---
 require('./phase4.test.js')(test);
 
+// --- Phase 7 (#26): the attorney sign-off gate on the client invoice —
+//     content-addressed reviewSignoff (@elias/auth) keyed on the canonical
+//     matter id (@elias/entities), gating `report --format ledes --bill` ---
+require('./signoff.test.js')(test);
+
 process.on('exit', () => {
   console.log(`\n${passed} tests passed${process.exitCode ? ' (with failures)' : ''}`);
 });
