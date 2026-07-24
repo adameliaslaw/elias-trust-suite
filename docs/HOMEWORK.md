@@ -42,111 +42,108 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 7 (epic #26), PR C — **wired the attorney sign-off primitive into the billable
-client invoice**, the first integration of `@elias/auth`'s `reviewSignoff`/`verifySignoff`/`signoffAuditEvent` into
-an app's compliance output. Also did the standing bookkeeping flip: **PR B (#50) is MERGED** (squashed to `main` as
-`91731ef`), so STATUS.md's header + phase-tracker row 7 + Done/Not-yet-built lists were updated to record
-`@elias/entities` as merged. Branch `claude/phase-7-suite-integration-ep0brc` off latest `main` (`91731ef`). PR
-references #26 as `Refs #26` (four checklist items remain after this one; the billable half of "wire the sign-off
-into each app" is now done — iolta's reconciliation packet is the remaining half).
+**Session that just ran:** Phase 7 (epic #26), PR C — **wired the attorney sign-off primitive into TWO apps'
+compliance outputs: the billable client invoice AND the iolta reconciliation packet.** This finishes the checklist
+sub-item "wire the sign-off into each app's compliance outputs" for billable + iolta. Also did the standing
+bookkeeping flip: **PR B (#50) is MERGED** (`91731ef`) — recorded in STATUS.md header + phase-tracker + Done/
+Not-yet-built lists. Branch `claude/phase-7-suite-integration-ep0brc` (this is the session's designated branch; both
+increments ride **one open PR, #51**). `Refs #26`.
 
-**Merge posture — SECURITY-SENSITIVE, leave for human review.** This increment gates a money-at-rest / client-facing
-billing path on a signature check. It's additive (nothing pre-existing is billed differently — the gate only *adds*
-a precondition) and fully test-covered, but it touches the "can this invoice be issued" decision, so per CONTRIBUTING
-it should NOT auto-merge / self-merge. Auto-merge is disabled repo-wide; **leave PR C open for the owner** unless CI
-+ a human review both clear it. **If it does get merged, the NEXT session must flip this PR's label to MERGED with
-its squash SHA** in STATUS.md's header + phase-tracker (the standing convention).
+**Merge posture — SECURITY-SENSITIVE, leave for human review.** Both increments gate money-at-rest / trust-fund
+compliance deliverables on a signature check. Additive (each only *adds* a precondition) and fully test-covered, but
+they touch "can this invoice/packet be issued," so per CONTRIBUTING they should NOT auto-merge. Auto-merge is
+disabled repo-wide; **PR #51 is left open for the owner.** **If it gets merged, the NEXT session must flip PR #51's
+label to MERGED with its squash SHA** in STATUS.md's header + phase-tracker.
 
-**Why this increment:** #26's checklist item "**Build `packages/auth` … a uniform, audited attorney review/sign-off
-flow on every compliance output**" had the primitive built + merged (PR #49) but not yet *integrated*. Now that
-canonical entity ids exist (PR #50), the signed output can carry a canonical `{kind, id}`. The billable LEDES
-invoice is the natural first target: it's the "one client invoice" the end-to-end workflow (item 4) rides on, and
-billable's free-text `client|matter` is exactly the `deriveEntityId('matter', client, matter)` case the entities PR
-flagged. So this advances the auth-integration item *and* threads `@elias/entities` through a real billing path.
+### What landed — increment 1: billable client invoice (CommonJS, `node test/run.js`)
+- **`apps/billable/src/signoff.js`** (pure) — `invoiceOutput(entries, client, matter)` → an `@elias/auth`
+  `ComplianceOutput` keyed on the canonical `@elias/entities` matter id (`deriveEntityId('matter', client, matter)`);
+  `assertInvoiceSignedOff` throws unless a present, **approved**, content-matching sign-off covers the invoice.
+- **`apps/billable/src/store.js`** — `signoffsPath`/`readSignoffs`/`readSignoff`/`recordSignoff` (persists
+  `signoffs.json` 0600 keyed by canonical id; chains `compliance.signoff` via `audit.appendSemantic`).
+- **`apps/billable/bin/billable.js`** — new `signoff <client> <matter> --attorney "…" [--reject --note W]
+  [--status]` command; `report --format ledes --bill` calls `assertInvoiceSignedOff` per invoice **before** stamping
+  any billed marker (all-or-nothing). **`package.json`** adds `@elias/auth`+`@elias/entities` deps + pretest builds.
+- **`apps/billable/test/signoff.test.js`** (6 checks) registered in `run.js`. billable 56 → 62.
 
-**What landed (billable; plain CommonJS, `node test/run.js` harness):**
-- **`apps/billable/src/signoff.js`** (new, pure) — `invoiceOutput(entries, client, matter)` assembles the exact
-  client-billable invoice for one (client, matter) as an `@elias/auth` `ComplianceOutput`: `kind:'invoice'`,
-  `id: deriveEntityId('matter', client, matter)` (canonical `@elias/entities` id), `content` = the billable entries
-  reduced to compliance leaves (id/date/hours/rate/amount/aiCost/code/description, sorted by id) + integer-cents
-  total. `signInvoice(...)` → `{output, signoff, event}` (wraps `reviewSignoff` + `signoffAuditEvent`).
-  `invoiceSignoffValid` / `assertInvoiceSignedOff` are the gate — throw unless a present, **approved**, content-
-  matching sign-off covers the current invoice.
-- **`apps/billable/src/store.js`** — `signoffsPath()` / `readSignoffs()` / `readSignoff(matterId)` /
-  `recordSignoff(matterId, signoff, event)`. `recordSignoff` persists to `signoffs.json` (0600, keyed by canonical
-  matter id, latest-per-matter wins) and chains the `compliance.signoff` event into the tamper-evident trail via
-  `audit.appendSemantic`. The audit chain retains every signature even though the JSON keeps only the latest.
-- **`apps/billable/bin/billable.js`** — new `signoff <client> <matter> --attorney "Name" [--reject --note W]
-  [--status]` command; and `report --format ledes --bill` now calls `assertInvoiceSignedOff` for every
-  (client, matter) invoice in the export **before** stamping any billed marker (all-or-nothing; a throw is caught
-  by `main().catch`, so nothing is billed). USAGE updated.
-- **`apps/billable/package.json`** — adds `@elias/auth` + `@elias/entities` deps and builds them in `pretest`.
-- **`apps/billable/test/signoff.test.js`** (new, 6 checks) + registered in `test/run.js`: canonical-id keying,
-  content-addressing (stops verifying once the invoice grows), fail-closed on missing/rejected sign-off,
-  persistence + chained `compliance.signoff` event, and a full CLI end-to-end (`--bill` refused → `signoff` →
-  `--bill` succeeds → re-bill is a no-op).
+### What landed — increment 2: iolta reconciliation packet (TS/ESM browser app, `tsx` tests)
+- **`apps/iolta/src/signoff.ts`** (pure, **browser-safe**) — `packetOutput(packet)` → an `@elias/auth`
+  `ComplianceOutput` keyed on the packet's `account__month__vN` doc id, content bound to the packet's sealed
+  `contentHash`; `signPacket`/`verifyPacketSignoff`/`assertPacketSignedOff`/`packetSignoffAuditEvent`.
+  **THE WRINKLE + HOW IT'S SOLVED:** `@elias/auth` hashes with `node:crypto`, which a Vite browser bundle can't
+  load, and iolta finalizes in the browser (`App.tsx`). So signoff.ts recomputes the **identical** digest with
+  `@elias/audit/core`'s portable `sha256Hex`+`stableStringify` (already the packet's hashing) and imports **only
+  `@elias/auth` TYPES** (`import type`, erased at build → no `node:crypto` in the bundle; verified: `grep node:crypto
+  dist/assets` is empty). `stableStringify` === `@elias/auth.canonicalize` for JSON-safe input, so the digests match.
+- **`apps/iolta/src/App.tsx`** — the attest-and-finalize handler now creates the sign-off (`signPacket`, attorney =
+  the attesting actor), **gates the retained deliverable** on `assertPacketSignedOff`, stores `signoff` on the
+  packet doc, and chains a `compliance.signoff` event via `appendAuditEvent`.
+- **`apps/iolta/test/signoff.test.ts`** (9 checks) — the **pinning test**: proves `packetOutputDigest` is
+  byte-identical to the REAL `@elias/auth.outputDigest`, and `verifySignoff` agrees in BOTH directions (auth accepts
+  iolta's Signoff; iolta accepts auth's) — so the browser-safe reimplementation stays lock-step with the shared
+  primitive. Plus content-addressing (amend invalidates), fail-closed, event shape. **`package.json`** adds
+  `@elias/auth` dep + build lists + the test.
+- **`packages/audit/src/events.ts` (+core.ts/index.ts)** — `compliance.signoff` + `ComplianceSignoffPayload` added
+  to the closed audit vocabulary, so iolta's typed `appendAuditEvent('compliance.signoff', …)` typechecks and the
+  event is uniform suite-wide (billable emits the same shape via a loose API).
 
-**Next session → keep working epic #26 (four items remain).** Highest-leverage next steps, roughly in order:
-1. **Finish item 1 — wire the sign-off onto the iolta reconciliation packet.** Mirror what billable now does: the
-   iolta lifecycle (`apps/iolta/src/lifecycle.ts`) already finalizes a month into a content-hashed `FinalizedPacket`
-   (attorney attest + `contentHash = sha256(canonical(body))`) — bind an `@elias/auth` `reviewSignoff` to that
-   packet's content, keyed on a canonical `{kind:'iolta.reconciliation', id}` (derive a canonical id for the
-   account/period), and append `signoffAuditEvent` into iolta's `audit-chain.ts`. **Note iolta is TS/ESM/vitest and
-   browser-safe** — `@elias/auth`'s `reviewSignoff` uses `node:crypto`; check whether the lifecycle (browser-safe,
-   imports only `@elias/audit/core`) can take a `node:crypto` dep, or compute the digest with the same
-   `sha256Hex`/`stableStringify` from `@elias/audit/core` it already uses and only *store*/verify the Signoff shape.
-   This is the one wrinkle — billable was easy because it's Node-only. (This IS security-sensitive → human review.)
-2. **Retrofit iolta + billable auth** onto `@elias/auth` the same way books is (one sign-in model). While there,
-   give iolta clients / billable matters canonical `@elias/entities` ids (billable's free-text client|matter is the
-   `deriveEntityId('matter', …)` case — `signoff.js` already derives it; lift that into the entry model; iolta
-   memberships are the `normalizeMembershipRole` case). (Security-sensitive → human review.)
-3. One suite nav shell + firm profile + home page (`canonicalId` from `GET /api/companies` is ready to key it).
-   **Lower-risk / eligible for in-session merge** — a good pick if you want an additive, non-security increment.
-4. The end-to-end Matterproof→confirmed-time→one-invoice→payment→books workflow with trust funds firewalled; then
-   surface-trio (REST+CLI+web) parity. The `EntityRegistry` is the join layer for this.
+**Next session → keep working epic #26 (four items remain). Highest-leverage next steps, roughly in order:**
+1. **Retrofit iolta + billable auth onto `@elias/auth`** (one sign-in model, the way books already is). This is the
+   other half of the "Build packages/auth" checklist item. iolta auth is Firebase-based (`server.ts` verifies
+   Firebase ID tokens) — reconcile that with `@elias/auth`'s password/session model, or scope to sharing the role
+   model (`normalizeMembershipRole` from `@elias/entities` is the iolta owner/admin/member → canonical bridge).
+   billable has no real auth yet (local CLI + a LAN token). **Security-sensitive → human review.** Same browser-
+   safety wrinkle applies to iolta: `@elias/auth`'s password/session code is `node:crypto` and server-only — keep it
+   out of the browser bundle (it belongs in `server.ts`, which is Node).
+2. **One suite nav shell + firm profile + home page.** `canonicalId` from books' `GET /api/companies` is ready to
+   key it. **Lower-risk / eligible for in-session merge** — good pick for an additive, non-security increment.
+3. **End-to-end workflow:** Matterproof evidence → confirmed time → ONE client invoice → payment → operating books;
+   earned IOLTA disbursements → operating books, trust funds firewalled. The `EntityRegistry` is the join layer.
+4. **Surface-trio parity** (REST + CLI + accessible web UI) across apps.
 
 **Also available (correctness/moat, parallel, not a #26 blocker):** migrate more domains into `@elias/rules`
-(sales-tax rate + ST-50/51 calendar, LEDES units, 1040 planner brackets). **Phase 8 (#27)** stays parallelizable
-but "finalize last."
+(sales-tax rate + ST-50/51 calendar, LEDES units, 1040 planner brackets). **Phase 8 (#27)** parallelizable, "finalize
+last."
 
-**State of the repo:** all suites green (`npm run typecheck` clean; full `npm test` exit 0). billable **62** (was 56;
-+6 signoff) via `node test/run.js`; books 252 smoke + 30 roles + 6 entities-adapter + 21 migrations + 9 sqlite + 11
-secrets + 5 outbox + audit; `@elias/auth` 31; `@elias/entities` 50; `@elias/audit` 16; `@elias/money` 22;
-`@elias/rules` 13; iolta 18+16. `grep -c msh.team package-lock.json` = 0. Each `@elias/*` package's `dist/` is
-gitignored (built by each consumer's `pretest` — billable's now builds money+audit+auth+entities).
+**State of the repo:** all suites green (`npm ci` clean; `npm run typecheck` exit 0; full `npm test` exit 0; Vite
+`npm run build --workspace @elias/iolta` clean, no `node:crypto` in bundle). billable **62** (was 56); iolta signoff
+**9** (iolta total 18+16+7+…+9); `@elias/audit` **16** (new event type, still green); `@elias/auth` 31;
+`@elias/entities` 50; `@elias/money` 22; `@elias/rules` 13; books 252 smoke + 30 + 6 + 21 + 9 + 11 + 5 + audit.
+`grep -c msh.team package-lock.json` = 0. Each `@elias/*` package's `dist/` is gitignored (built by each consumer's
+`pretest`; iolta's now builds money+audit+auth).
 
 **Gotchas (carried forward + new):**
-- **NEW — the `--bill` gate is content-addressed, so a date-filtered `--bill` can fail after a whole-matter
-  sign-off.** `billable signoff` signs the matter's *entire* current invoice (no date window); `report --bill` bills
-  whatever `entries` the report resolved. If a future `--bill` narrows by `--from/--to`, the assembled invoice
-  differs from the signed one and the gate correctly refuses (re-sign, or bill unfiltered). This is fail-closed by
-  design — don't "fix" it by loosening `verifySignoff`.
-- **NEW — `@elias/auth` + `@elias/entities` are ESM; billable is CommonJS.** `require(esm)` works on Node ≥ 22.5
-  (CI is 24), same as books. Their `dist/` must be built before billable runs — billable's `pretest` now builds
-  `money+audit+auth+entities`. If you run a billable test DIRECTLY after editing `packages/auth|entities/src/*`,
-  rebuild first (`npm run build --workspace @elias/auth --workspace @elias/entities`).
-- **NEW — the Write-tool NUL-byte gotcha bites CJS too.** Writing/Editing `bin/billable.js` injected literal NUL
-  bytes where spaces were typed inside a `` `${...}` `` template — `git` then saw the file as binary and Edit
-  couldn't match. Fix: `perl -i -pe 's/\x00/ /g' <file>` then confirm `tr -cd '\000' < file | wc -c` is 0. Also
-  watch for **unescaped backticks inside the USAGE template literal** — they terminate the string (caused a
-  `SyntaxError` this session; `node -c <file>` catches it fast).
-- **`@elias/auth` sign-off is content-addressed.** `verifySignoff` hashes the CANONICALIZED output; change any
-  field after signing → verification fails by design (re-sign). Array order significant; object key order not.
+- **NEW — the browser-safety pattern for `@elias/auth` in iolta.** `@elias/auth` (and `@elias/entities`) hash with
+  `node:crypto` → NOT importable at VALUE level in the Vite browser bundle. iolta's `signoff.ts` reimplements the
+  digest browser-safe via `@elias/audit/core` and imports auth only as `import type`. If you extend iolta with more
+  `@elias/auth` behavior, either (a) keep it type-only + reimplement via `@elias/audit/core` with a Node pinning test
+  (the sign-off pattern), or (b) put the value-level `@elias/auth` use in `server.ts` (Node), never in `src/*` that
+  App.tsx imports. Verify after: `grep -rl "node:crypto\|createHash\|scryptSync" apps/iolta/dist/assets` must be empty.
+- **NEW — `stableStringify` (@elias/audit/core) === `canonicalize` (@elias/auth) for JSON-safe input** (both
+  recursively key-sort + drop `undefined`; SHA-256 is deterministic), which is WHY the browser-safe digest matches.
+  If either serializer changes, the iolta pinning test (`test/signoff.test.ts`) breaks — that's the guardrail; fix
+  the reimplementation, don't skip the test.
+- **NEW — adding an audit event type:** append the `*Payload` interface + an `AuditEventPayloads` entry + an
+  `AUDIT_EVENT_TYPES` entry in `packages/audit/src/events.ts`, and export the type from BOTH `core.ts` and `index.ts`.
+  No test pins the list length, so it's additive. Rebuild `@elias/audit` (consumers rebuild it in their pretest).
+- **`@elias/auth` sign-off is content-addressed.** `verifySignoff`/`verifyPacketSignoff` recompute the hash; change
+  any field after signing → verification fails by design (re-sign). Array order significant; object key order not.
+- **NEW — the Write-tool NUL-byte gotcha bit the billable `bin` last increment** (injected NUL where a space was
+  typed inside a `` `${...}` `` template; `git` saw the file binary). Fix: `perl -i -pe 's/\x00/ /g' <file>`, confirm
+  `tr -cd '\000' < file | wc -c` is 0. Also watch **unescaped backticks inside a template literal** (USAGE string) —
+  they terminate the string; `node -c <file>` catches it.
 - **schema migrations (SQLite tables):** append `{version:N, up(db)}` to `SCHEMA_MIGRATIONS` in
-  `apps/books/lib/sqlite.js` (bumps `PRAGMA user_version`). **doc shape:** append `{version:N, up(obj)}` to
-  `COMPANY_/GLOBAL_MIGRATIONS` in `lib/migrations.js` + bump the matching `*_SCHEMA_VERSION`. Don't edit an
-  existing step.
-- **`@elias/entities` stays decoupled (zero inter-package deps).** Canonical role literals in `membership.ts` are
-  kept in lock-step with `@elias/auth` ROLES by a pinning test, NOT a code import. No `@elias/*` package imports
-  another — keep it that way to avoid build-order pain.
-- **entity ids are OPAQUE + fail-closed.** Don't read structure out of the local part beyond the kind prefix.
-  `makeEntityId` rejects spaces/slashes/pipes; pass free text through `slugifyLocalId` (legible) or `deriveLocalId`
-  (hash) first. `deriveEntityId('matter', client, matter)` is the natural key two apps agree on without coordinating.
-- **Do NOT `git checkout apps/billable/bin/billable.js`** to drop a mode diff — HEAD mode is `100755`. If a test run
-  flips the bit, `chmod 755`, NOT 644. (This session's runs kept it 755.)
-- **`npm ci` can install incompletely** (missing `@elias/*` symlink / `@types/node` → a TS build fails);
-  **re-run `npm ci`** if a build fails. Keep `grep -c msh.team package-lock.json` = 0.
-- **Raw `api.github.com` curl is blocked (403)** — use `mcp__github__*` tools. Pushing docs to the branch
-  retriggers CI — merge only after the run on the **final** commit concludes success.
-- **billable's `test/run.js` fires some async tests WITHOUT awaiting**; billable has no typecheck/lint in CI (plain
-  JS) — lean on `node test/run.js` and `node -c` for syntax.
+  `apps/books/lib/sqlite.js`; **doc shape:** `COMPANY_/GLOBAL_MIGRATIONS` in `lib/migrations.js` + bump the matching
+  `*_SCHEMA_VERSION`. Don't edit an existing step.
+- **`@elias/entities` stays decoupled** — canonical role literals pinned to `@elias/auth` ROLES by a test, not an
+  import. No `@elias/*` package imports another — keep it that way.
+- **Do NOT `git checkout apps/billable/bin/billable.js`** to drop a mode diff — HEAD mode is `100755`; if a run flips
+  it, `chmod 755`.
+- **`npm ci` can install incompletely** (missing `@elias/*` symlink / `@types/node` → a TS build fails); **re-run
+  `npm ci`** if a build fails. Keep `grep -c msh.team package-lock.json` = 0.
+- **Raw `api.github.com` curl is blocked (403)** — use `mcp__github__*` tools. Pushing docs to the branch retriggers
+  CI — merge only after the run on the **final** commit concludes success. `actions_list` output is huge — parse it
+  with a python/jq one-liner from the saved tool-result file, not a raw Read.
+- **iolta tests run via `tsx`** (Node), so they CAN use `@elias/auth`/`node:crypto` — only the browser BUNDLE can't.
+  billable's `test/run.js` fires some async tests without awaiting; billable has no typecheck in CI (plain JS) — lean
+  on `node test/run.js` + `node -c`.

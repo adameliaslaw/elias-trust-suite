@@ -40,6 +40,7 @@ import {
   type FrozenInputs,
   type SourceDocument,
 } from './lifecycle';
+import { signPacket, assertPacketSignedOff, packetSignoffAuditEvent } from './signoff';
 import {
   parseDelimited,
   transactionFingerprint,
@@ -732,10 +733,21 @@ export default function App() {
         amendmentReason,
       });
 
-      // 1. Retain the immutable packet (create-only; never overwritten).
+      // The uniform attorney sign-off (Phase 7 / #26): the same content-addressed
+      // reviewSignoff billable puts on a client invoice, here on the trust
+      // reconciliation packet. It binds to the packet's sealed contentHash, so an
+      // amendment (new version → new hash) needs a fresh sign-off. Gate the
+      // retained deliverable on it — a packet can't be issued unless a matching,
+      // approved sign-off covers it (fail-closed; the attesting attorney is the
+      // signer).
+      const packetSignoff = signPacket(packet, { attorney: actor, signedAt: finalizedAt });
+      assertPacketSignedOff(packet, packetSignoff);
+
+      // 1. Retain the immutable packet + its sign-off (create-only; never overwritten).
       await setDoc(doc(db, 'reconciliationPackets', packetDocId(accountId, finalizeMonth, version)), {
         ...packet,
         uid: user.uid,
+        signoff: packetSignoff,
         // A deterministic rendered artifact, retained alongside the structured
         // packet so the exact audit document reproduces byte-for-byte.
         document: renderPacketDocument(packet),
@@ -772,6 +784,11 @@ export default function App() {
         periodStart: format(startOfMonth(monthDate), 'yyyy-MM-dd'),
         periodEnd: format(endOfMonth(monthDate), 'yyyy-MM-dd'),
       }));
+
+      // 4. Chain the uniform compliance.signoff event — the same event billable
+      //    appends when an attorney signs off on a client invoice, so the trail
+      //    names who signed exactly this packet content.
+      await appendAuditEvent(user.uid, 'compliance.signoff', packetSignoffAuditEvent(packetSignoff).payload);
 
       setIsFinalizeModalOpen(false);
       setAttestChecked(false);

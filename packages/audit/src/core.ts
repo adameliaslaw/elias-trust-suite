@@ -11,6 +11,7 @@ export type {
   AuthPasswordChangedPayload,
   BankTransactionsImportedPayload,
   ClioEntrySyncedPayload,
+  ComplianceSignoffPayload,
   ConfigChangedPayload,
   EntryOverrideWrittenPayload,
   ExpensePayload,
