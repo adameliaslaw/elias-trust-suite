@@ -1,6 +1,6 @@
-// Encryption-at-rest tests (#24): Plaid/ACH/employee-bank secrets are ciphertext
-// on disk and in backups; the in-memory db round-trips to plaintext; the key is
-// never packed into a backup.
+// Encryption-at-rest tests (#24, re-derived for SQLite in Phase 6 / #25):
+// Plaid/ACH/employee-bank secrets are ciphertext in books.db and in backups; the
+// in-memory db round-trips to plaintext; the key is never packed into a backup.
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
@@ -14,6 +14,13 @@ const DATA = process.env.QUICKBUCKS_DATA_DIR;
 const store = require('../lib/store');
 const secrets = require('../lib/secrets');
 const backup = require('../lib/backup');
+const sqlite = require('../lib/sqlite');
+
+// The company doc as persisted (the row's TEXT blob) — the SQLite equivalent of
+// reading the old company-<id>.json file.
+function storedDoc(companyId) {
+  return sqlite.connect().prepare('SELECT doc FROM company WHERE id=?').get(companyId).doc;
+}
 
 let passed = 0;
 function check(name, fn) {
@@ -57,15 +64,23 @@ function main() {
   db.employees.push({ id: 'e1', name: 'Jane', bankRouting: '011401533', bankAccount: EMP_ACCOUNT });
   store.save(db);
 
-  const rawBytes = fs.readFileSync(path.join(DATA, `company-${company.id}.json`), 'utf8');
-  check('no plaintext secret survives on disk', () => {
+  const rawDoc = storedDoc(company.id);
+  // The raw bytes of the whole db file — nothing plaintext should appear here.
+  const dbBytes = fs.readFileSync(sqlite.DB_FILE, 'latin1');
+  check('no plaintext secret survives in the stored doc', () => {
     for (const secret of [PLAID_SECRET, ACCESS_TOKEN, EMP_ACCOUNT, '123456789', 'NJ-ACCT-1']) {
-      assert.ok(!rawBytes.includes(secret), `plaintext secret leaked to disk: ${secret}`);
+      assert.ok(!rawDoc.includes(secret), `plaintext secret leaked to the stored doc: ${secret}`);
     }
   });
 
-  check('secret leaves are enc:v1: ciphertext on disk', () => {
-    const onDisk = JSON.parse(rawBytes);
+  check('no plaintext secret survives in the raw books.db file bytes', () => {
+    for (const secret of [PLAID_SECRET, ACCESS_TOKEN, EMP_ACCOUNT]) {
+      assert.ok(!dbBytes.includes(secret), `plaintext secret leaked into books.db: ${secret}`);
+    }
+  });
+
+  check('secret leaves are enc:v1: ciphertext in the stored doc', () => {
+    const onDisk = JSON.parse(rawDoc);
     assert.ok(secrets.isEncrypted(onDisk.settings.plaid.secret));
     assert.ok(secrets.isEncrypted(onDisk.settings.payroll.ach.bankAccount));
     assert.ok(secrets.isEncrypted(onDisk.settings.payroll.njAch.account));
@@ -81,16 +96,16 @@ function main() {
     assert.strictEqual(db.employees[0].bankAccount, EMP_ACCOUNT);
   });
 
-  check('openFromStorage round-trips the on-disk ciphertext back to plaintext', () => {
-    const reopened = secrets.openFromStorage(JSON.parse(rawBytes));
+  check('openFromStorage round-trips the stored ciphertext back to plaintext', () => {
+    const reopened = secrets.openFromStorage(JSON.parse(rawDoc));
     assert.strictEqual(reopened.settings.plaid.secret, PLAID_SECRET);
     assert.strictEqual(reopened.settings.payroll.ach.bankRouting, FIRM_ROUTING);
     assert.strictEqual(reopened.bankConnections[0].accessToken, ACCESS_TOKEN);
     assert.strictEqual(reopened.employees[0].bankAccount, EMP_ACCOUNT);
   });
 
-  check('company file is written 0600', () => {
-    const mode = fs.statSync(path.join(DATA, `company-${company.id}.json`)).mode & 0o777;
+  check('books.db is written 0600', () => {
+    const mode = fs.statSync(sqlite.DB_FILE).mode & 0o777;
     assert.strictEqual(mode, 0o600, `expected 0600, got ${mode.toString(8)}`);
   });
 
@@ -102,10 +117,10 @@ function main() {
 
   // --- backups are ciphertext-only and never contain the key ---
   const tar = backup.tarball();
-  check('backup tarball excludes the encryption keyfile', () => {
+  check('backup tarball excludes the encryption keyfile but includes books.db', () => {
     const names = backup.entryNames(tar);
     assert.ok(!names.some(n => n.endsWith('.secret.key')), `keyfile leaked into backup: ${names.join(', ')}`);
-    assert.ok(names.some(n => n.endsWith(`company-${company.id}.json`)));
+    assert.ok(names.some(n => n.endsWith('books.db')), `books.db missing from backup: ${names.join(', ')}`);
   });
 
   check('backup bytes contain no plaintext secret', () => {

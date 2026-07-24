@@ -1,13 +1,18 @@
 'use strict';
-// Schema versioning + forward migration runner for the JSON store (Phase 6 / #25).
+// DOCUMENT schema versioning + forward migration runner (Phase 6 / #25).
 //
-// Books persists one JSON file per company (data/company-<id>.json) plus a
-// household file (data/global.json). Before this module those files carried no
-// version marker, and shape upgrades were done by an ad-hoc, unversioned
-// migrate(db) that ran field-backfills on every load. That is fine for adding a
-// missing array, but it does not scale to real shape changes before a
-// multi-user deploy: there is no record of which upgrades a file has already
-// seen, no ordered sequence, and no guarantee the upgraded file is written back.
+// Books persists one JSON DOCUMENT per company plus a household document. These
+// were per-file (data/company-<id>.json, data/global.json) in the JSON era and
+// are now rows in data/books.db (lib/sqlite.js), but this runner is deliberately
+// ENGINE-AGNOSTIC: it upgrades the in-memory doc OBJECT, and the storage layer
+// decides how to persist it. It is a separate concern from the SQLite TABLE
+// schema (PRAGMA user_version, in lib/sqlite.js) — this versions the shape of a
+// doc, that versions the shape of the tables. Before this module the docs
+// carried no version marker, and shape upgrades were done by an ad-hoc,
+// unversioned migrate(db) that ran field-backfills on every load. That is fine
+// for adding a missing array, but it does not scale to real shape changes before
+// a multi-user deploy: there is no record of which upgrades a doc has already
+// seen, no ordered sequence, and no guarantee the upgrade is written back.
 //
 // This runner fixes that:
 //   - Every store file carries a `schemaVersion` integer.

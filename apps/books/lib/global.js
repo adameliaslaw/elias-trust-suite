@@ -1,12 +1,15 @@
-// Household-level data shared across companies: the companies registry,
-// the app password, and the household tax profile. Lives in data/global.json.
-const fs = require('fs');
+// Household-level data shared across companies: the companies registry, the app
+// password, the principals, and the household tax profile. Persisted as the
+// single `global` row in data/books.db (Phase 6 / #25 — was data/global.json).
 const path = require('path');
 
+// DATA_DIR is still the anchor for the audit chain, receipts, the secrets
+// keyfile and backups, so it stays exported here. Computed identically to
+// lib/sqlite.js's copy (kept independent to avoid a require cycle).
 const DATA_DIR = process.env.QUICKBUCKS_DATA_DIR || path.join(__dirname, '..', 'data');
-const GLOBAL_FILE = path.join(DATA_DIR, 'global.json');
 const { defaultScheduleElias } = require('./schedule-elias');
 const migrations = require('./migrations');
+const sqlite = require('./sqlite');
 
 let cache = null;
 
@@ -60,10 +63,11 @@ function taxProfileForYear(g, year) {
 
 function loadGlobal() {
   if (cache) return cache;
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (fs.existsSync(GLOBAL_FILE)) {
+  const db = sqlite.connect(); // ensures schema + one-time legacy JSON import
+  const row = db.prepare('SELECT doc FROM global WHERE id = 0').get();
+  if (row) {
     const defaults = defaultGlobal();
-    const parsed = JSON.parse(fs.readFileSync(GLOBAL_FILE, 'utf8'));
+    const parsed = JSON.parse(row.doc);
     cache = { ...defaults, ...parsed };
     // Trust the FILE's stored schema version, not the default — otherwise the
     // default's current version masks a legacy file's missing one and the
@@ -100,11 +104,18 @@ function loadGlobal() {
 }
 
 function saveGlobal() {
-  const tmp = GLOBAL_FILE + '.tmp';
-  // 0600: global.json holds the app password hash and the companies registry.
-  fs.writeFileSync(tmp, JSON.stringify(cache, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, GLOBAL_FILE);
-  try { fs.chmodSync(GLOBAL_FILE, 0o600); } catch { /* platform without POSIX modes */ }
+  // The household doc holds the app password hash + principals; it lives in the
+  // 0600 books.db (whose file mode is set on connect). A single UPSERT of the
+  // one global row.
+  sqlite.connect()
+    .prepare('INSERT OR REPLACE INTO global(id, doc) VALUES(0, ?)')
+    .run(JSON.stringify(cache));
 }
 
-module.exports = { loadGlobal, saveGlobal, taxProfileForYear, DATA_DIR };
+// Test hook: drop the in-memory household cache so the next loadGlobal()
+// re-reads the durable row (simulates a process restart).
+function _reset() {
+  cache = null;
+}
+
+module.exports = { loadGlobal, saveGlobal, taxProfileForYear, DATA_DIR, _reset };

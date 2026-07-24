@@ -60,9 +60,11 @@ function tarball() {
   if (fs.existsSync(DATA_DIR)) {
     // Exclude the snapshot dir (no nesting) AND the encryption keyfile: a
     // backup must be ciphertext-only, so a stolen tarball cannot decrypt the
-    // secrets it contains. The key is held separately (env or the untarred
-    // data dir).
-    walk(DATA_DIR, 'quickbucks-data', out, new Set(['backups', '.secret.key']));
+    // secrets it contains (books.db holds sealed secrets). The key is held
+    // separately (env or the untarred data dir). The transient SQLite journal
+    // is skipped too: with journal_mode=DELETE it exists only mid-transaction,
+    // and a snapshot must capture the committed books.db, not a rollback file.
+    walk(DATA_DIR, 'quickbucks-data', out, new Set(['backups', '.secret.key', 'books.db-journal']));
   }
   out.push(Buffer.alloc(1024));   // end-of-archive: two zero blocks
   return Buffer.concat(out);

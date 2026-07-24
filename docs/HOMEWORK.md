@@ -42,116 +42,87 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 6 (epic #25) — **PR 12**: the last structural box, **part 1 of 2** —
-**schema-version + migration runner** and the **3-role household identity model**. Branch
-`claude/elias-phase-6-migrations-5dfhbj` off latest `main` (`05e69cf`); PR referencing #25 (`Refs #25`, not
-`Fixes` — durable storage, the box's third sub-item, is still outstanding as its own next PR). This is NOT a
-pure structural refactor — it changes persistence + access control — so per CONTRIBUTING the correctness rides
-on **reproducing tests written first** (migration round-trips + role enforcement), and the migration/security
-risk is covered by those tests in CI. **Repo auto-merge is DISABLED**, so this session merged by hand after the
-`ci` workflow concluded success on the final (docs) commit (squash).
+**Session that just ran:** Phase 6 (epic #25) — **PR 13 (#48): DURABLE STORAGE (the last sub-item of the
+migrations/roles/storage box).** Replaced the JSON-per-company file store with **SQLite** via the built-in
+`node:sqlite`. Branch `claude/sqlite-durable-storage-iqvhdx` off latest `main` (`5a94a6f`); PR references #25 as
+`Refs #25` (the epic was already closed by the owner — this PR completes its final checkbox, and the box now
+closes). **Money-at-rest + migrations change → per CONTRIBUTING, auto-merge is OFF and it is left for HUMAN
+REVIEW** (correctness rides on reproducing tests written first). Repo auto-merge is disabled anyway.
 
-**Owner decisions this session (ratified via AskUserQuestion):**
-- **Role model = 3 household roles: owner / bookkeeper / read-only.** (Not per-company; the real identity/session
-  home is Phase 7's `packages/auth` — this is the enforcement + audit-actor groundwork.)
-- **Durable storage = SQLite is the committed direction, delivered as its own next HUMAN-REVIEWED PR** (not
-  bundled with roles). JSON-per-company stays for now. Rationale: the switch re-touches the #24 secrets-at-rest +
-  transactional-outbox atomicity (both built around whole-file JSON writes), so it deserves its own focused,
-  reviewed pass — and doing it now (no real data yet) is the cheapest time to migrate. The schema-version +
-  migration runner built this session is engine-agnostic and carries into SQLite.
+**The dependency decision (called out in the PR):** the suite's zero-dep ethos + D2=B "host as-is" rule out
+`better-sqlite3` (a native node-gyp addon — needs a C toolchain, breaks a bare `npm ci`). Chose **`node:sqlite`**:
+built INTO Node (since 22.5), no npm dependency, no native compile. It loads flag-free on 22.5+ and CI runs Node
+24. Cost: the **books Node floor moved 20 → 22.5** (`apps/books/package.json` `engines`). The one experimental
+stderr warning is filtered by message in `lib/sqlite.js` (honest — noted in the PR; every other warning still
+surfaces).
 
-**What landed this session (books; reproducing tests first, then implementation):**
-- **Schema versioning + migration runner — `apps/books/lib/migrations.js`.** Every store file carries a
-  `schemaVersion`. Ordered forward migrations (`{ version, up(obj) }`) run on load — applied only when their
-  version exceeds the file's (idempotent), logged (`[migrate] …`), and **never lossy** (steps only add/
-  transform). `store.load()` and `global.loadGlobal()` run the runner and, when a file is upgraded, **write it
-  back atomically** (tmp + rename, 0600) like a normal `save`. Seed stamps the current version so a fresh install
-  starts already-migrated. The old ad-hoc `migrate(db)` became **company migration v1** (now versioned + written
-  back). **Two version namespaces:** `COMPANY_SCHEMA_VERSION = 1`, `GLOBAL_SCHEMA_VERSION = 2`.
-  - **Gotcha fixed:** `loadGlobal` did `{ ...defaults, ...parsed }`, which let the default's current
-    `schemaVersion` **mask** a legacy file's missing one (blinding the runner). Now it trusts
-    `parsed.schemaVersion` explicitly. The company path has no such merge, so it was already correct.
-  - Round-trip tests: `apps/books/test/migrations.test.js` (19 checks) — legacy fixture → load → upgraded shape,
-    on disk + in memory, idempotent, 0600.
-- **3-role household identity (owner / bookkeeper / read-only).** The **household-shared password stays the
-  implicit DEFAULT OWNER**; named principals (bookkeeper / read-only) live in `global.json` `principals`, **seeded
-  empty by global schema migration v2**. Every pre-roles behavior is preserved (the 252-check smoke suite is
-  unchanged).
-  - **Enforcement is in the DISPATCHER auth gate** (`server.js`), beside `PUBLIC_ROUTES` + the auth check —
-    never in handlers (`isOwnerOnly`/`roleAllows`/`resolveRole`). owner = everything incl. principal admin +
-    backup; bookkeeper = all day-to-day/money writes but **no owner-only routes**; read-only = **GETs (+ logout)
-    only**. **Fail-closed** throughout (a session naming a deleted principal → 401).
-  - **Owner-only routes:** `/api/principals*`, `/api/password`, `/api/backup`.
-  - **`audit.actor` now surfaces the acting principal** (`jane@ip`); the default owner + trusted-network mode
-    keep the original `local@ip`, so **every pre-existing actor string is unchanged**.
-  - **`/api/login`** accepts an optional `username` (named-principal login); the password-only path is untouched.
-    **`/api/auth-status`** now also returns `role`/`username` (additive). Owner-only principal-admin routes in
-    **`apps/books/lib/routes/principals.js`** (GET/POST/PUT/DELETE `/api/principals`), wired in `server.js`.
-  - **Session model:** a session stores only the principal's `username` (null = default owner); the **role is
-    re-resolved from `global.json` per request**, so deleting a principal or changing a role takes effect on the
-    next request. `auth.createSession(username)` + `auth.sessionPrincipal(token)` are the new hooks.
-  - Role-enforcement tests: `apps/books/test/roles.test.js` (30 checks) — each role hits/is-denied the right
-    routes, named-principal login, actor attribution, deleted-principal session denial.
+**What landed (books; reproducing tests written first, then implementation):**
+- **`lib/sqlite.js` (new).** Owns the durable connection (`data/books.db`), `journal_mode=DELETE` +
+  `synchronous=FULL` (crash-atomic, self-contained file after commit → the tar backup stays trivially correct).
+  Three tables: `global` (single household row), `company` (one JSON doc per company), `outbox` (the real
+  transactional outbox). **SQLite TABLE schema is versioned by `PRAGMA user_version`** (ordered DDL steps) — a
+  layer SEPARATE from the doc-shape `schemaVersion`. **Lossless JSON→SQLite import** on first boot: reads any
+  legacy `global.json` / `company-*.json` / `db.json`, applies the doc migration, drains any pending in-doc
+  outbox into the `outbox` table, inserts rows, and renames each file `*.migrated` (idempotent across restarts).
+  Already-sealed secret strings move verbatim (never decrypted mid-import).
+- **Design choice — a DOCUMENT store on SQLite, NOT a relational rewrite.** Each company stays one in-memory JSON
+  doc, so every route handler + the **252-check smoke suite are unchanged**. The win is REAL transactions.
+- **Secrets-at-rest re-derived (`lib/store.js` `docText`).** The in-memory db is ALWAYS plaintext; `docText`
+  seals known leaves (via `lib/secrets.js`, untouched) + strips the vestigial in-doc outbox, then the sealed JSON
+  is stored in the `company.doc` column. Proven: no plaintext secret in the raw `books.db` bytes; `books.db` is
+  0600; keyfile still excluded from backups.
+- **Transactional outbox re-derived on SQLite (`lib/outbox.js`).** `stage()` writes the company doc UPDATE + the
+  owed-event INSERTs in ONE `BEGIN IMMEDIATE … COMMIT` — after commit BOTH are durable or NEITHER is (rollback
+  proven). `flush()` delivers each owed event to the tamper-evident chain (idempotent on `msg_id` via
+  `audit.appendIdempotent`) and DELETEs the row as it lands → exactly-once. `recoverAll(companiesFn)` on boot
+  redelivers anything a crash stranded. `store.commit`/`commitMany` and `server.js`'s boot call updated to the
+  new signatures; every money handler is otherwise unchanged.
+- **`lib/global.js`** `loadGlobal`/`saveGlobal` now read/write the single `global` row (same normalization as
+  before); `DATA_DIR` still exported here (anchors the audit chain, receipts, keyfile, backups).
+- Tests: **`test/sqlite.test.js` (9, new)** lossless import + `user_version`; re-derived **`test/outbox.test.js`
+  (5)** SQLite exactly-once/recovery/rollback; **`test/secrets.test.js` (11)** ciphertext in `books.db`;
+  **`test/migrations.test.js` (21)** doc runner + JSON→SQLite on-disk round trip. `test/smoke.test.js` had two
+  backup/receipt assertions repointed at `books.db` (behavior identical, 252 checks).
 
-**Next session → FINISH the #25 structural box (durable storage), then the rules migration, then close #25 → Phase 7:**
-- **Durable storage = the SQLite PR (its OWN human-reviewed PR; leave auto-merge off / request review).** Replace
-  the JSON-per-company file store with SQLite while there is still no real data. **Re-derive and re-verify the two
-  #24 boundaries against SQLite transactions, do not mechanically port them:** (a) secrets-at-rest
-  (`lib/secrets.js` seals known leaves on the way to a whole-file write) and (b) the transactional outbox
-  (`lib/outbox.js` rides the owed audit event *inside* the company JSON so it commits atomically with the mutation
-  via tmp+rename). SQLite's atomicity is row/transaction-level — the outbox can become a real table + a single
-  transaction, but prove exactly-once delivery + crash recovery still hold. The `schemaVersion` + migration-runner
-  concept carries over (a `schema_version` table / PRAGMA user_version + ordered forward migrations). Zero-dep
-  ethos + D2=B "host as-is": `better-sqlite3` is a native addon (node-gyp) and `node:sqlite` needs newer Node than
-  the repo's Node 20 target — call out the dependency choice in the PR. **When that lands, all three sub-items
-  (migrations ✅ + roles ✅ + durable storage) are done → the box closes → confirm #25 exit criteria → Phase 7 (#26).**
-- **Migrate more domains into `@elias/rules`** (correctness/moat, not a #25 blocker): sales-tax rate + ST-50/51
-  calendar, LEDES units, the 1040 planner brackets — same cited pattern, so those constants stop being inline
-  literals.
-- Then **Phase 7 (#26)** — suite integration + `packages/auth` (the natural home for the per-principal identity +
-  role work started here). **Phase 8 (#27)** stays parallelizable but "finalize last."
+**Next session → Phase 7 (#26): suite integration + `packages/auth`** (the natural home for the per-principal
+identity + role work started in books — the 3-role model landed in books' dispatcher first). Read the epic issue
+#26. **Also available (correctness/moat, parallel, not a #25 blocker):** migrate more domains into `@elias/rules`
+with the same cited pattern — sales-tax rate + ST-50/51 calendar, LEDES units, 1040 planner brackets — so those
+constants stop being inline literals. **Phase 8 (#27)** stays parallelizable but "finalize last."
 
-**State of the repo:** all suites green (`npm test` exit 0 across every workspace — books **252**-smoke + **19**
-migration + **30** role, billable, iolta, audit 16, money 22, rules 13); `npm run typecheck` clean;
-`grep -c msh.team package-lock.json` = 0. Backlog: #24 CLOSED (P5); #16/#17/#18, #14, #11/#15, #12/#13/#20 closed;
-#19 ratified + closed. All money through `@elias/money`, all compliance events through `@elias/audit`; new money
-mutations use `store.commit`/`commitMany`, never `save(db)` + `audit.append`. **When you add save/migration paths,
-preserve the atomic-save + outbox semantics from #24.**
+**State of the repo:** all suites green (`npm test` exit 0 across every workspace — books **252**-smoke + **9**
+sqlite + **11** secrets + **5** outbox + **21** migration + **30** role + the rest, billable, iolta, audit 16,
+money 22, rules 13); `npm run typecheck` clean; `grep -c msh.team package-lock.json` = 0; `package-lock.json`
+unchanged (no new dependency — `node:sqlite` is built in). `data/` is gitignored (books.db never committed). All
+money through `@elias/money`, all compliance events through `@elias/audit`; money mutations use
+`store.commit`/`commitMany`, never `save(db)` + `audit.append`.
 
 **Gotchas (carried forward + new):**
-- **NEW — schema migrations:** to add a store-file migration, append a `{ version: N, up(obj) }` step to
-  `COMPANY_MIGRATIONS` / `GLOBAL_MIGRATIONS` in `lib/migrations.js` (N = next integer) and bump the matching
-  `*_SCHEMA_VERSION`. **Do NOT edit an existing step** — files already at that version will not re-run it. Migrated
-  files are **written back atomically on load** (so a load can write; that is intentional + idempotent, and boot
-  triggers it before serving, not on a user GET). `dist/` unaffected. If you change `loadGlobal`'s file-merge,
-  keep it trusting `parsed.schemaVersion` (see the masking gotcha above) or the runner goes blind.
-- **NEW — roles / dispatcher gate:** authorization lives in `server.js` (`isOwnerOnly`/`roleAllows`/`resolveRole`),
-  NOT in handlers. If you add an owner-only route, add its path to `isOwnerOnly`. A session stores the principal
-  `username`; role is resolved fresh from `global.json` each request. `audit.actor(req)` reads `req.principal`
-  (set by the dispatcher) — a named principal → `username@ip`, the default owner / trusted mode → `local@ip`
-  (unchanged). New principals go in `global.json.principals` (seeded by global migration v2); never store a
-  password in plaintext (`auth.hashPassword`). The 252 smoke suite runs mostly with `QUICKBUCKS_DISABLE_AUTH=1`
-  (→ owner, no gate) + the default-owner login, so it exercises no 403 paths — the role paths are covered by
-  `test/roles.test.js`.
-- **`@elias/rules` build order:** `apps/books` depends on the built `@elias/rules` `dist/`. books' `pretest`
-  builds money + audit + rules; if you run a books test file directly after editing `packages/rules/src/*`,
-  **rebuild rules first** (`npm run build --workspace @elias/rules`). `dist/` is gitignored.
-- **payroll params come from `@elias/rules`:** `tables2026.js` is gone; constants live in
-  `packages/rules/src/payroll.ts` (cited), read via `payrollValues(year)`. Add a tax year by registering a cited
+- **NEW — SQLite engine (`lib/sqlite.js`):** two migration layers. To change TABLES, append a `{ version: N,
+  up(db) }` step to `SCHEMA_MIGRATIONS` (bumps `PRAGMA user_version`); to change the DOC shape, use
+  `lib/migrations.js` (`schemaVersion`) exactly as before. The in-memory `db` is plaintext; secrets seal ONLY in
+  `store.docText`. The outbox is a TABLE now — never write owed events into the doc; `docText` strips the
+  vestigial `db.outbox`. `node:sqlite` needs Node ≥ 22.5 (books `engines`); CI is 24. `books.db` uses
+  `journal_mode=DELETE` (single self-contained file after commit) — do NOT switch to WAL without teaching the tar
+  backup to checkpoint/include the `-wal`/`-shm` sidecars.
+- **NEW — crash-sim in tests:** `store._evict` (drop the in-memory doc cache) + `audit._reset` + optionally
+  `sqlite._reset()` (close+reopen the connection) simulate a restart; the durable data is `books.db`. `store._docText(db)`
+  is a test hook for staging raw docs.
+- **schema migrations (doc layer):** to add a store-doc migration, append `{ version: N, up(obj) }` to
+  `COMPANY_MIGRATIONS`/`GLOBAL_MIGRATIONS` and bump the matching `*_SCHEMA_VERSION`. Do NOT edit an existing step.
+- **roles / dispatcher gate:** authorization lives in `server.js` (`isOwnerOnly`/`roleAllows`/`resolveRole`), NOT
+  in handlers. New principals go in `global.json.principals` (now the `global` row); role re-resolved per request.
+- **`@elias/rules` build order:** `apps/books` depends on built `@elias/rules` `dist/`. books' `pretest` builds
+  money + audit + rules; if you run a books test directly after editing `packages/rules/src/*`, rebuild rules
+  first (`npm run build --workspace @elias/rules`). `dist/` is gitignored.
+- **payroll params come from `@elias/rules`** (`payrollValues(year)`); add a tax year by registering a cited
   `PayrollParams`, not a per-year JS table.
-- **books transactional outbox / secrets-at-rest (#24):** money handlers call `store.commit`/`commitMany`
-  (enqueue→atomic save→flush), never `save(db)` + `audit.append`. The in-memory `db` is ALWAYS plaintext;
-  encryption happens only in `store.save`/`store.load` via `lib/secrets.js` (add a new secret field's path to the
-  enumerated `applyToSecrets` allowlist). `/api/audit` returns `{ verified, entries }` from the tamper-evident
-  chain (H1). Keep new data files 0600; keep `data/.secret.key` out of backups.
-- **Do NOT `git checkout apps/billable/bin/billable.js` to drop a mode diff** — HEAD mode is **`100755`**
-  (verified `git ls-files -s`). If a run flips the bit, `chmod 755` to match, NOT `chmod 644`. This session did
-  not touch it.
-- **`npm ci` can install incompletely** (missing `@types/node` breaks the `@elias/audit` TS build); if a package
-  build fails on missing node types, **re-run `npm ci`** (hit this session; re-run fixed it). Lockfile must keep
-  `grep -c msh.team package-lock.json` = 0.
-- **Raw `api.github.com` curl is blocked (403)** — use `mcp__github__*` tools. `actions_list`/`actions_get`
-  outputs are huge — jq the saved file for the run id + `conclusion`. Pushing docs to the branch retriggers CI —
-  merge only after the run on the **final** commit concludes success.
-- **billable's `test/run.js` fires async tests WITHOUT awaiting**; keep new billable tests self-consistent on the
-  final `BILLABLE_HOME`. billable has no typecheck/lint in CI (plain JS) — lean on `node test/run.js`.
+- **Do NOT `git checkout apps/billable/bin/billable.js`** to drop a mode diff — HEAD mode is `100755`. If a run
+  flips the bit, `chmod 755`, NOT 644. This session did not touch it.
+- **`npm ci` can install incompletely** (missing `@elias/rules` symlink / `@types/node` → the `@elias/audit` TS
+  build fails); **re-run `npm ci`** (hit this session; re-run fixed it). Keep `grep -c msh.team package-lock.json`
+  = 0.
+- **Raw `api.github.com` curl is blocked (403)** — use `mcp__github__*` tools. Pushing docs to the branch
+  retriggers CI — merge only after the run on the **final** commit concludes success.
+- **billable's `test/run.js` fires async tests WITHOUT awaiting**; billable has no typecheck/lint in CI (plain
+  JS) — lean on `node test/run.js`.
