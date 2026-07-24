@@ -40,6 +40,8 @@ import {
   type FrozenInputs,
   type SourceDocument,
 } from './lifecycle';
+import { signPacket, assertPacketSignedOff, packetSignoffAuditEvent } from './signoff';
+import { can, currentRoleFor } from './authz';
 import {
   parseDelimited,
   transactionFingerprint,
@@ -676,6 +678,15 @@ export default function App() {
     const summary = reconciliationSummary.find(r => r.month === finalizeMonth);
     if (!summary) return;
 
+    // Authorization routes through the shared @elias/auth role policy (#26):
+    // finalizing is day-to-day work (owner + bookkeeper), never a read-only
+    // member. Today the sole authenticated user is the owner, so this is a
+    // no-op; it enforces automatically once firm memberships are live.
+    if (!can(currentRoleFor(user.uid), 'finalize')) {
+      alert('Your role is not permitted to finalize a reconciliation.');
+      return;
+    }
+
     const exceptions = periodExceptions(summary);
     if (exceptions.length > 0) {
       alert('Resolve these exceptions before finalizing:\n\n' + exceptions.map(e => `• ${e.message}`).join('\n'));
@@ -732,10 +743,21 @@ export default function App() {
         amendmentReason,
       });
 
-      // 1. Retain the immutable packet (create-only; never overwritten).
+      // The uniform attorney sign-off (Phase 7 / #26): the same content-addressed
+      // reviewSignoff billable puts on a client invoice, here on the trust
+      // reconciliation packet. It binds to the packet's sealed contentHash, so an
+      // amendment (new version → new hash) needs a fresh sign-off. Gate the
+      // retained deliverable on it — a packet can't be issued unless a matching,
+      // approved sign-off covers it (fail-closed; the attesting attorney is the
+      // signer).
+      const packetSignoff = signPacket(packet, { attorney: actor, signedAt: finalizedAt });
+      assertPacketSignedOff(packet, packetSignoff);
+
+      // 1. Retain the immutable packet + its sign-off (create-only; never overwritten).
       await setDoc(doc(db, 'reconciliationPackets', packetDocId(accountId, finalizeMonth, version)), {
         ...packet,
         uid: user.uid,
+        signoff: packetSignoff,
         // A deterministic rendered artifact, retained alongside the structured
         // packet so the exact audit document reproduces byte-for-byte.
         document: renderPacketDocument(packet),
@@ -773,6 +795,11 @@ export default function App() {
         periodEnd: format(endOfMonth(monthDate), 'yyyy-MM-dd'),
       }));
 
+      // 4. Chain the uniform compliance.signoff event — the same event billable
+      //    appends when an attorney signs off on a client invoice, so the trail
+      //    names who signed exactly this packet content.
+      await appendAuditEvent(user.uid, 'compliance.signoff', packetSignoffAuditEvent(packetSignoff).payload);
+
       setIsFinalizeModalOpen(false);
       setAttestChecked(false);
       setAmendReason('');
@@ -791,6 +818,14 @@ export default function App() {
     if (!user || !finalizeMonth) return;
     const existing = reconciliations.find(r => r.month === finalizeMonth);
     if (!existing || existing.lifecycleStatus !== 'finalized') return;
+    // Reopening (unsealing) a locked, retained record is an OWNER-ONLY action in
+    // the shared @elias/auth policy (#26) — the trust-fund equivalent of books'
+    // sensitive routes. No-op for today's sole owner; enforced when memberships
+    // go live (a bookkeeper member can finalize but not reopen).
+    if (!can(currentRoleFor(user.uid), 'reopen')) {
+      alert('Your role is not permitted to reopen a finalized reconciliation.');
+      return;
+    }
     if (!amendReason.trim()) {
       alert('Reopening a finalized reconciliation requires a documented reason.');
       return;

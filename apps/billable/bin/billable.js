@@ -10,6 +10,7 @@ const { textReport, csvReport, htmlInvoice, money } = require('../src/report');
 const { ledesExport } = require('../src/ledes');
 const { installHooks, eventFromHookPayload, settingsPath } = require('../src/hooks');
 const { isClientBillable } = require('../src/client-billing');
+const signoff = require('../src/signoff');
 
 const USAGE = `Matterproof — proof of work for every matter
 
@@ -34,7 +35,14 @@ Commands:
          [--bill [--reference R]]   (ledes) record the invoice as issued:
                                stamp the billed marker so re-export can't
                                double-bill. Only reviewed, attorney-confirmed
-                               entries are ever included.
+                               entries are ever included, and each (client,
+                               matter) invoice must carry a matching attorney
+                               sign-off (see below) before it can be billed.
+  signoff <client> <matter>    Record an attorney's audited sign-off on a
+          --attorney "Name"    client invoice — binds to the EXACT current
+          [--reject --note W]  invoice (content-addressed); required before
+          [--status]           report --bill. --status shows coverage;
+                               --reject --note "why" records a rejection.
   economics [--from D] [--to D]    Per-matter unit economics: actual hours,
                                AI cost, effective rate, flat-fee margin
   fee <client> <matter> <amount>   Record a flat fee for a matter (economics)
@@ -304,10 +312,89 @@ async function main() {
       // entry (#18), so a re-export excludes them and no entry is double-billed.
       if (format === 'ledes' && args.bill) {
         const billed = entries.filter(isClientBillable);
+        // Phase 7 (#26): an invoice can't be issued until an attorney has signed
+        // off on its EXACT content. Verify every (client, matter) invoice in this
+        // export up front — an unsigned, rejected, or stale-signed invoice throws
+        // (caught by main().catch), so NOTHING is billed unless all are covered.
+        const invoices = new Map();
+        for (const e of billed) {
+          const output = signoff.invoiceOutput(entries, e.client, e.matter);
+          invoices.set(output.id, { client: e.client, matter: e.matter, output });
+        }
+        for (const { client, matter, output } of invoices.values()) {
+          signoff.assertInvoiceSignedOff(entries, client, matter, store.readSignoff(output.id));
+        }
         const reference = typeof args.reference === 'string' ? args.reference : `MP-LEDES-${today()}`;
         for (const e of billed) store.markBilled(e.id, 'ledes', reference);
         console.log(`Marked ${billed.length} entr${billed.length === 1 ? 'y' : 'ies'} billed to LEDES ` +
           `under ${reference}; a re-export will exclude them.`);
+      }
+      return;
+    }
+
+    case 'signoff': {
+      // Phase 7 (#26): record an attorney's audited sign-off on a client
+      // invoice. The sign-off binds to the EXACT current invoice for one
+      // (client, matter) — every reviewed, attorney-confirmed, unbilled entry —
+      // and `report --format ledes --bill` is gated on it. Signing off on the
+      // whole matter invoice (no date window) mirrors what `--bill` issues.
+      const [client, matter] = args._;
+      if (!client || !matter) {
+        console.error('Usage: billable signoff <client> <matter> --attorney "Name"\n' +
+          '                 [--reject --note "why"] [--status]');
+        process.exitCode = 1;
+        return;
+      }
+      const entries = filterEntries(buildEntries(store.readEvents(), config, store.readOverrides()), {
+        client,
+        matter,
+      });
+      const output = signoff.invoiceOutput(entries, client, matter);
+      const dollars = (cents) => `$${(cents / 100).toFixed(2)}`;
+
+      // --status: report whether a valid, approved sign-off covers the current
+      // invoice, without recording anything. Exit 1 when it isn't billable.
+      if (args.status) {
+        const rec = store.readSignoff(output.id);
+        console.log(`Matter ${client} / ${matter} (${output.id})`);
+        console.log(`  invoice: ${output.content.entryCount} billable entr` +
+          `${output.content.entryCount === 1 ? 'y' : 'ies'}, ${dollars(output.content.totalCents)}`);
+        if (!rec) {
+          console.log('  sign-off: none on record — bill is locked');
+        } else {
+          const valid = signoff.invoiceSignoffValid(rec, output);
+          console.log(`  sign-off: ${rec.decision} by ${rec.attorney} at ${rec.signedAt}`);
+          console.log(`  status:   ${valid ? 'VALID for the current invoice — bill is unlocked'
+            : 'STALE or rejected — re-sign before billing'}`);
+          if (!valid) process.exitCode = 1;
+        }
+        if (!store.readSignoff(output.id)) process.exitCode = 1;
+        return;
+      }
+
+      if (output.content.entryCount === 0) {
+        console.error(`No reviewed, attorney-confirmed, unbilled entries for ${client} / ${matter} — ` +
+          'nothing to sign off.');
+        process.exitCode = 1;
+        return;
+      }
+      const attorney = typeof args.attorney === 'string' ? args.attorney : config.timekeeper;
+      if (!attorney) {
+        console.error('A reviewing attorney is required: pass --attorney "Name" (or set config.timekeeper).');
+        process.exitCode = 1;
+        return;
+      }
+      const decision = args.reject ? 'rejected' : 'approved';
+      const note = typeof args.note === 'string' ? args.note : undefined;
+      // reviewSignoff throws if a rejection carries no note (caught by main().catch).
+      const { signoff: rec, event } = signoff.signInvoice(entries, client, matter, { attorney, decision, note });
+      store.recordSignoff(output.id, rec, event);
+      console.log(`Recorded ${decision} sign-off by ${rec.attorney} on ${client} / ${matter} (${output.id}).`);
+      console.log(`  invoice: ${output.content.entryCount} entr` +
+        `${output.content.entryCount === 1 ? 'y' : 'ies'}, ${dollars(output.content.totalCents)}; ` +
+        `content hash ${rec.contentHash.slice(0, 16)}…`);
+      if (decision === 'approved') {
+        console.log('  `report --format ledes --bill` for this matter is now unlocked (until the invoice changes).');
       }
       return;
     }

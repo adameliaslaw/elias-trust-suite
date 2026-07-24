@@ -303,6 +303,35 @@ export interface TrustImportConfirmedPayload {
   rejected?: number;
 }
 
+// --- shared compliance sign-off (Phase 7, #26) ---
+
+/**
+ * An attorney signed off on a compliance output. The uniform, audited
+ * review/sign-off the suite puts on every compliance deliverable — a billable
+ * client invoice, an IOLTA reconciliation packet, a payroll filing. It mirrors
+ * @elias/auth's `signoffAuditEvent` payload verbatim (the sign-off is defined
+ * there, content-addressed); this is its first-class slot in the closed audit
+ * vocabulary so every app chains it identically. The `contentHash` binds the
+ * signature to the exact reviewed output — a later edit changes the hash, so a
+ * stale approval can never silently cover mutated numbers.
+ */
+export interface ComplianceSignoffPayload {
+  /** Output family signed off, e.g. 'invoice', 'iolta.reconciliation'. */
+  outputKind: string;
+  /** Stable identifier of the signed output within its kind. */
+  outputId: string;
+  /** sha256 (hex) of the canonicalized output at sign-off time. */
+  contentHash: string;
+  /** The reviewing attorney's decision. */
+  decision: 'approved' | 'rejected';
+  /** Reviewing attorney principal (the signer). */
+  actor: string;
+  /** ISO-8601 instant the sign-off was recorded. */
+  signedAt: string;
+  /** Optional reviewer note (required in practice for a rejection). */
+  note?: string;
+}
+
 // Transactional-outbox idempotency token (books, #24). When a books money
 // mutation and its audit event are committed as one crash-atomic unit, the
 // owed event is delivered through a transactional outbox (apps/books/lib/
@@ -350,6 +379,7 @@ export interface AuditEventPayloads {
   'trust.client_created': TrustClientCreatedPayload;
   'trust.statement_balance_set': TrustStatementBalanceSetPayload;
   'trust.import_confirmed': TrustImportConfirmedPayload;
+  'compliance.signoff': ComplianceSignoffPayload;
 }
 
 export type AuditEventType = keyof AuditEventPayloads;
@@ -393,4 +423,5 @@ export const AUDIT_EVENT_TYPES: readonly AuditEventType[] = [
   'trust.client_created',
   'trust.statement_balance_set',
   'trust.import_confirmed',
+  'compliance.signoff',
 ];

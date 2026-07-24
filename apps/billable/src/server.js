@@ -26,6 +26,9 @@ const { textReport, csvReport, htmlInvoice } = require('./report');
 const { ledesExport } = require('./ledes');
 const { eventFromHookPayload } = require('./hooks');
 const { reviewRateSnapshot } = require('./client-billing');
+// Suite-wide cookie parsing (#26): one never-throws parser shared with books /
+// @elias/auth, instead of a per-app regex that a malformed %-escape could break.
+const { parseCookieHeader } = require('@elias/auth');
 
 // sendgridApiKey is deliberately NOT exposed through the config API —
 // it stays CLI/file-only so no local page can read it.
@@ -123,8 +126,8 @@ function authorize({ remoteAddress, url, headers }, token) {
   }
   const bearer = (headers.authorization || '').replace(/^Bearer\s+/i, '');
   if (bearer && tokenEqual(bearer, token)) return { ok: true };
-  const cookie = /(?:^|;\s*)mp_token=([^;]+)/.exec(headers.cookie || '');
-  if (cookie && tokenEqual(cookie[1], token)) return { ok: true };
+  const cookieToken = parseCookieHeader(headers.cookie).mp_token;
+  if (cookieToken && tokenEqual(cookieToken, token)) return { ok: true };
   return { ok: false };
 }
 

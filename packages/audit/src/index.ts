@@ -5,6 +5,7 @@ export type {
   AuditEventPayloads,
   AuditEventType,
   AuthLoginFailedPayload,
+  ComplianceSignoffPayload,
   InvoiceSentPayload,
   PayrollPaymentPayload,
   ReconciliationCompletedPayload,
