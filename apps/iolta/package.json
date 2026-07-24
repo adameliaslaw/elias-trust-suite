@@ -11,11 +11,11 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "pretest": "npm run build --workspace @elias/money --workspace @elias/audit --workspace @elias/auth --if-present",
-    "test": "tsx test/money.test.ts && tsx test/audit.test.ts && tsx test/reconciliation.test.ts && tsx test/model.test.ts && tsx test/imports.test.ts && tsx test/ledger.test.ts && tsx test/lifecycle.test.ts && tsx test/signoff.test.ts && tsx test/pdf.test.ts",
+    "pretest": "npm run build --workspace @elias/money --workspace @elias/audit --workspace @elias/auth --workspace @elias/entities --if-present",
+    "test": "tsx test/money.test.ts && tsx test/audit.test.ts && tsx test/reconciliation.test.ts && tsx test/model.test.ts && tsx test/imports.test.ts && tsx test/ledger.test.ts && tsx test/lifecycle.test.ts && tsx test/signoff.test.ts && tsx test/authz.test.ts && tsx test/pdf.test.ts",
     "typecheck": "tsc --noEmit",
-    "pretypecheck": "npm run build --workspace @elias/money --workspace @elias/audit --workspace @elias/auth --if-present",
-    "prebuild": "npm run build --workspace @elias/money --workspace @elias/audit --workspace @elias/auth --if-present"
+    "pretypecheck": "npm run build --workspace @elias/money --workspace @elias/audit --workspace @elias/auth --workspace @elias/entities --if-present",
+    "prebuild": "npm run build --workspace @elias/money --workspace @elias/audit --workspace @elias/auth --workspace @elias/entities --if-present"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
@@ -38,6 +38,7 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "@elias/audit": "0.1.0",
     "@elias/auth": "0.1.0",
+    "@elias/entities": "0.1.0",
     "@elias/money": "0.1.0"
   },
   "devDependencies": {

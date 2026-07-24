@@ -41,6 +41,7 @@ import {
   type SourceDocument,
 } from './lifecycle';
 import { signPacket, assertPacketSignedOff, packetSignoffAuditEvent } from './signoff';
+import { can, currentRoleFor } from './authz';
 import {
   parseDelimited,
   transactionFingerprint,
@@ -677,6 +678,15 @@ export default function App() {
     const summary = reconciliationSummary.find(r => r.month === finalizeMonth);
     if (!summary) return;
 
+    // Authorization routes through the shared @elias/auth role policy (#26):
+    // finalizing is day-to-day work (owner + bookkeeper), never a read-only
+    // member. Today the sole authenticated user is the owner, so this is a
+    // no-op; it enforces automatically once firm memberships are live.
+    if (!can(currentRoleFor(user.uid), 'finalize')) {
+      alert('Your role is not permitted to finalize a reconciliation.');
+      return;
+    }
+
     const exceptions = periodExceptions(summary);
     if (exceptions.length > 0) {
       alert('Resolve these exceptions before finalizing:\n\n' + exceptions.map(e => `• ${e.message}`).join('\n'));
@@ -808,6 +818,14 @@ export default function App() {
     if (!user || !finalizeMonth) return;
     const existing = reconciliations.find(r => r.month === finalizeMonth);
     if (!existing || existing.lifecycleStatus !== 'finalized') return;
+    // Reopening (unsealing) a locked, retained record is an OWNER-ONLY action in
+    // the shared @elias/auth policy (#26) — the trust-fund equivalent of books'
+    // sensitive routes. No-op for today's sole owner; enforced when memberships
+    // go live (a bookkeeper member can finalize but not reopen).
+    if (!can(currentRoleFor(user.uid), 'reopen')) {
+      alert('Your role is not permitted to reopen a finalized reconciliation.');
+      return;
+    }
     if (!amendReason.trim()) {
       alert('Reopening a finalized reconciliation requires a documented reason.');
       return;

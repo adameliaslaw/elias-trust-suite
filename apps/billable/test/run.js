@@ -604,6 +604,9 @@ test('LAN auth: loopback exempt, token via query/bearer/cookie, rejects wrong to
   // Bearer and cookie both work; wrong values don't.
   assert.strictEqual(authorize({ remoteAddress: '10.0.0.5', url: u('/api/entries'), headers: { authorization: `Bearer ${TOKEN}` } }, TOKEN).ok, true);
   assert.strictEqual(authorize({ remoteAddress: '10.0.0.5', url: u('/api/entries'), headers: { cookie: `x=1; mp_token=${TOKEN}` } }, TOKEN).ok, true);
+  // The shared @elias/auth cookie parser never throws: a malformed %-escape in a
+  // neighbouring cookie must not stop the token cookie from authorizing (#26).
+  assert.strictEqual(authorize({ remoteAddress: '10.0.0.5', url: u('/api/entries'), headers: { cookie: `junk=%E0%A4%A; mp_token=${TOKEN}` } }, TOKEN).ok, true);
   assert.strictEqual(authorize({ remoteAddress: '10.0.0.5', url: u('/api/entries'), headers: { cookie: 'mp_token=' + 'b'.repeat(32) } }, TOKEN).ok, false);
   assert.strictEqual(authorize({ remoteAddress: '10.0.0.5', url: u(`/?token=${'b'.repeat(32)}`), headers: {} }, TOKEN).ok, false);
 

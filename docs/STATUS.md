@@ -42,7 +42,14 @@
 > (`sha256Hex`+`stableStringify`) and imports only `@elias/auth` TYPES — a Node pinning test proves the digest is
 > byte-identical and `verifySignoff` agrees in both directions (the decoupled-package pattern). `compliance.signoff`
 > is now a first-class type in the shared `@elias/audit` vocabulary. 9 new iolta tests; the Vite bundle carries no
-> `node:crypto`.**
+> `node:crypto`. **AUTH RETROFIT (same PR):** both apps now AUTHORIZE against `@elias/auth`'s canonical
+> `owner/bookkeeper/read-only` role model without replacing their identity providers (Firebase stays for iolta, the
+> LAN token for billable). `apps/iolta/src/authz.ts` reconciles iolta's forked `owner/admin/member` memberships to
+> the canonical roles (pinned to `@elias/entities.normalizeMembershipRole`) and decides access via `@elias/auth`'s
+> transport-agnostic `roleAllows` with an iolta policy (reopen/manage-members owner-only; read-only reads only);
+> `App.tsx`'s finalize + reopen now route through it (no-op for today's sole owner, enforcing when memberships load).
+> billable's `serve` gate adopts `@elias/auth.parseCookieHeader`. A new crypto-free `@elias/auth/roles` subpath lets
+> the browser import `roleAllows` without pulling `node:crypto`. 7 new iolta authz tests.**
 > Phase 5 (#24) ✅ done + MERGED (PR #34); Phase 0 (#19) ✅ ratified
 > (D1=C, D2=B, D3=C split-by-domain, D4=B). Phase 5 = data + audit hardening; all 8 checklist
 > items landed with reproducing tests: fail-closed iolta verify against the recorded head + surfaced offline
@@ -153,7 +160,7 @@ The tests are valuable but largely do not cover these paths.
 | 4 — Redesign Matterproof billing | #23 | ✅ Done (#17, #18 fixed) |
 | 5 — Data + audit hardening | #24 | ✅ Done — PR #34 merged (8/8; Clio retry dedup + books transactional outbox) |
 | 6 — Books role + `packages/rules` | #25 | ✅ **Done** (exit criteria met; epic closed by owner). PR 1 MERGED (#36): `@elias/rules` + payroll retrofit + tax fixes. PR 2–11 MERGED (#37–#46): full `server.js` split (all 11 route groups in `lib/routes/*`). PR 12 MERGED (#47, `5a94a6f`): schema-version + migration runner + 3-role household identity. **PR 13 MERGED (#48, `31771a9`): durable storage — SQLite (`node:sqlite`) replaces the JSON file store; secrets-at-rest + transactional outbox re-derived against SQLite transactions.** All three sub-items (migrations + roles + durable storage) done → the migrations/roles/storage box closed. Remaining rules-domain migrations (sales-tax/LEDES/1040) tracked as correctness follow-ups, not #25 blockers. |
-| 7 — Suite integration + `packages/auth` | #26 | 🟨 **In progress** — PR A MERGED (#49, `63ea43e`): **`@elias/auth` built** (shared identity core: password/sessions/throttle/roles/cookies + attorney sign-off; 31 tests) and books retrofitted to consume it. PR B MERGED (#50, `91731ef`): **`@elias/entities` built** — canonical firm/client/matter/user ID model (typed prefixed opaque IDs + parse/format/validate + `EntityRegistry` cross-app lookup + role reconciliation); books consumes it. PR C (this session, open): **attorney sign-off wired into BOTH the billable client invoice AND the iolta reconciliation packet** — billable's `report --format ledes --bill` is gated on a content-addressed `reviewSignoff` keyed on the canonical matter id (+ `billable signoff` command); iolta's attest-and-finalize gates the retained packet on `assertPacketSignedOff` (browser-safe digest via `@elias/audit/core`, wire-compatible with `@elias/auth` by a pinning test). Both chain the shared `compliance.signoff` audit event (now a first-class `@elias/audit` type). 15 tests (billable 56→62; iolta +9). **Checklist item "wire the sign-off into each app's compliance outputs" is DONE for billable + iolta.** Remaining #26 checklist: iolta/billable auth retrofit, a suite nav shell + home, the end-to-end Matterproof→invoice→payment→books workflow, and surface-trio parity. |
+| 7 — Suite integration + `packages/auth` | #26 | 🟨 **In progress** — PR A MERGED (#49, `63ea43e`): **`@elias/auth` built** (shared identity core: password/sessions/throttle/roles/cookies + attorney sign-off; 31 tests) and books retrofitted to consume it. PR B MERGED (#50, `91731ef`): **`@elias/entities` built** — canonical firm/client/matter/user ID model (typed prefixed opaque IDs + parse/format/validate + `EntityRegistry` cross-app lookup + role reconciliation); books consumes it. PR C (this session, open): **attorney sign-off wired into BOTH the billable client invoice AND the iolta reconciliation packet** — billable's `report --format ledes --bill` is gated on a content-addressed `reviewSignoff` keyed on the canonical matter id (+ `billable signoff` command); iolta's attest-and-finalize gates the retained packet on `assertPacketSignedOff` (browser-safe digest via `@elias/audit/core`, wire-compatible with `@elias/auth` by a pinning test). Both chain the shared `compliance.signoff` audit event (now a first-class `@elias/audit` type). Also the **auth retrofit**: iolta + billable now authorize against `@elias/auth`'s canonical roles (iolta `src/authz.ts` bridges owner/admin/member→canonical + `roleAllows`; billable adopts `parseCookieHeader`), keeping Firebase / the LAN token as identity providers. 22 tests (billable 56→62; iolta +9 signoff +7 authz). **Checklist items "wire the sign-off into each app's compliance outputs" and "retrofit iolta/billable auth" are DONE.** Remaining #26 checklist: a suite nav shell + home, the end-to-end Matterproof→invoice→payment→books workflow, and surface-trio parity. |
 | 8 — Release engineering | #27 | ⬜ Parallelizable; finalize last |
 
 ## Done (real, keep)
@@ -197,6 +204,15 @@ The tests are valuable but largely do not cover these paths.
   and imports only `@elias/auth` TYPES; `test/signoff.test.ts` (9 checks) proves byte-for-byte agreement + both-way
   `verifySignoff` against the real `@elias/auth` (the decoupled-package pin). `compliance.signoff` added to the
   shared `@elias/audit` vocabulary. The Vite bundle carries no `node:crypto`.
+- iolta + billable auth retrofit onto `@elias/auth` (Phase 7 / #26, PR C): both apps now AUTHORIZE against the
+  canonical `owner/bookkeeper/read-only` role model without replacing their identity providers. `apps/iolta/src/authz.ts`
+  reconciles iolta's forked `owner/admin/member` memberships to the canonical roles (browser-safe map pinned to
+  `@elias/entities.normalizeMembershipRole` by `test/authz.test.ts`) and decides via `@elias/auth`'s `roleAllows` +
+  an iolta policy (reopen / manage-members owner-only; read-only reads only); `App.tsx` finalize + reopen route
+  through it (no-op for today's single owner, enforcing when firm memberships load — the `currentRoleFor` seam).
+  billable's `serve` gate uses `@elias/auth.parseCookieHeader`. New crypto-free `@elias/auth/roles` subpath export so
+  the browser imports `roleAllows` without `node:crypto`. 7 authz tests; Firebase (iolta) + the LAN token (billable)
+  are untouched.
 - `apps/books` ← quickbucks; `apps/iolta` ← IOLTA-Reconciliation; `apps/billable` ← Billable.ai —
   all migrated, money + audit wired at the calc layer.
 - books schema-version + migration runner (`apps/books/lib/migrations.js`, Phase 6 / #25): every store file
@@ -235,9 +251,9 @@ The tests are valuable but largely do not cover these paths.
 model started in books is lifted into `@elias/auth`; books consumes it). `packages/entities` (Phase 7 / #26) —
 ✅ **built + MERGED** (PR #50 → `91731ef`; canonical firm/client/matter/user IDs + `EntityRegistry` + role
 reconciliation; books consumes it). Sign-off integration into each app's compliance outputs is now DONE for both
-**billable** (client invoice) and **iolta** (reconciliation packet) — PR C, this session. Still to do under #26:
-retrofit iolta + billable auth onto `@elias/auth`; a suite nav shell + home; the end-to-end workflow; surface-trio
-parity. · `packages/plaid` (deferred with bill-tracker migration).
+**billable** (client invoice) and **iolta** (reconciliation packet) — PR C, this session — and the **auth retrofit**
+(both apps authorize against `@elias/auth`'s canonical roles) is done too. Still to do under #26: a suite nav shell +
+home; the end-to-end workflow; surface-trio parity. · `packages/plaid` (deferred with bill-tracker migration).
 `packages/rules` (`@elias/rules`) now **built** (Phase 6 / #25): versioned, effective-date-keyed, cited;
 payroll retrofitted. Remaining Phase 6 domains to migrate into it in later PRs: sales-tax rate + ST-50/51
 calendar, LEDES units, and the 1040 planner brackets.

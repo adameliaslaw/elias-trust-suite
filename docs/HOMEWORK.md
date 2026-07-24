@@ -42,9 +42,10 @@
 
 ## Current handoff
 
-**Session that just ran:** Phase 7 (epic #26), PR C — **wired the attorney sign-off primitive into TWO apps'
-compliance outputs: the billable client invoice AND the iolta reconciliation packet.** This finishes the checklist
-sub-item "wire the sign-off into each app's compliance outputs" for billable + iolta. Also did the standing
+**Session that just ran:** Phase 7 (epic #26), PR C — **(1) wired the attorney sign-off primitive into TWO apps'
+compliance outputs (billable client invoice + iolta reconciliation packet), and (2) retrofit iolta + billable auth
+onto `@elias/auth`'s canonical role model.** This finishes TWO checklist sub-items: "wire the sign-off into each
+app's compliance outputs" AND "retrofit iolta/billable auth." Also did the standing
 bookkeeping flip: **PR B (#50) is MERGED** (`91731ef`) — recorded in STATUS.md header + phase-tracker + Done/
 Not-yet-built lists. Branch `claude/phase-7-suite-integration-ep0brc` (this is the session's designated branch; both
 increments ride **one open PR, #51**). `Refs #26`.
@@ -87,19 +88,37 @@ label to MERGED with its squash SHA** in STATUS.md's header + phase-tracker.
   to the closed audit vocabulary, so iolta's typed `appendAuditEvent('compliance.signoff', …)` typechecks and the
   event is uniform suite-wide (billable emits the same shape via a loose API).
 
-**Next session → keep working epic #26 (four items remain). Highest-leverage next steps, roughly in order:**
-1. **Retrofit iolta + billable auth onto `@elias/auth`** (one sign-in model, the way books already is). This is the
-   other half of the "Build packages/auth" checklist item. iolta auth is Firebase-based (`server.ts` verifies
-   Firebase ID tokens) — reconcile that with `@elias/auth`'s password/session model, or scope to sharing the role
-   model (`normalizeMembershipRole` from `@elias/entities` is the iolta owner/admin/member → canonical bridge).
-   billable has no real auth yet (local CLI + a LAN token). **Security-sensitive → human review.** Same browser-
-   safety wrinkle applies to iolta: `@elias/auth`'s password/session code is `node:crypto` and server-only — keep it
-   out of the browser bundle (it belongs in `server.ts`, which is Node).
-2. **One suite nav shell + firm profile + home page.** `canonicalId` from books' `GET /api/companies` is ready to
+### What landed — increment 3: iolta + billable auth retrofit onto `@elias/auth`
+Both apps now AUTHORIZE against `@elias/auth`'s canonical `owner/bookkeeper/read-only` role model — WITHOUT replacing
+their identity providers (Firebase stays for iolta; the LAN token for billable). Deliberate scope: ripping out a
+deployed IdP would be reckless and isn't what "one identity model" needs — the fork was the AUTHORIZATION vocabulary,
+and that's what got unified.
+- **`apps/iolta/src/authz.ts`** (browser-safe) — `roleForMembership` maps iolta's `owner/admin/member` (model.ts) →
+  canonical roles; `IOLTA_ROLE_POLICY` + `can`/`memberCan`/`assertCan` decide via `@elias/auth`'s transport-agnostic
+  `roleAllows` (reopen + manage-members are owner-only; read-only reads only). `currentRoleFor(uid)` is THE SEAM for
+  going multi-member later (returns `owner` today).
+- **`apps/iolta/src/App.tsx`** — finalize + reopen handlers now gate on `can(currentRoleFor(user.uid), 'finalize'|'reopen')`.
+  No-op for today's sole owner; enforces automatically when firm memberships load (Phase 8).
+- **`apps/iolta/test/authz.test.ts`** (7 checks) — pins `roleForMembership` to the REAL
+  `@elias/entities.normalizeMembershipRole` (barrel import, Node) and asserts the policy per role.
+- **`apps/billable/src/server.js`** — the `serve` gate's ad-hoc cookie regex is replaced by
+  `@elias/auth.parseCookieHeader` (never-throws; a malformed neighbouring cookie can't break token auth — new assertion
+  in `test/run.js`).
+- **`packages/auth/package.json`** — new crypto-free **`@elias/auth/roles`** subpath export, so a browser bundle imports
+  `roleAllows`/`ROLES`/`isRole` without pulling `node:crypto`. (Tried `@elias/entities/membership` too but it
+  transitively imports `node:crypto` via `ids.ts` → reverted; iolta reimplements the trivial map + pins it instead.)
+
+**Next session → keep working epic #26 (three items remain). Highest-leverage next steps, roughly in order:**
+1. **One suite nav shell + firm profile + home page.** `canonicalId` from books' `GET /api/companies` is ready to
    key it. **Lower-risk / eligible for in-session merge** — good pick for an additive, non-security increment.
-3. **End-to-end workflow:** Matterproof evidence → confirmed time → ONE client invoice → payment → operating books;
+2. **End-to-end workflow:** Matterproof evidence → confirmed time → ONE client invoice → payment → operating books;
    earned IOLTA disbursements → operating books, trust funds firewalled. The `EntityRegistry` is the join layer.
-4. **Surface-trio parity** (REST + CLI + accessible web UI) across apps.
+3. **Surface-trio parity** (REST + CLI + accessible web UI) across apps.
+
+**Auth retrofit — deliberately deferred sub-parts (not blockers, note for whoever revisits):** making iolta firm
+memberships LIVE (load the current user's membership, wire `currentRoleFor` to it, and enforce `roleAllows`
+server-side in `server.ts`) is Phase 8 deployment work. billable stays single-user (its principal is always `owner`);
+a real password/session sign-in there would be over-engineering unless it goes multi-user.
 
 **Also available (correctness/moat, parallel, not a #26 blocker):** migrate more domains into `@elias/rules`
 (sales-tax rate + ST-50/51 calendar, LEDES units, 1040 planner brackets). **Phase 8 (#27)** parallelizable, "finalize
@@ -107,10 +126,10 @@ last."
 
 **State of the repo:** all suites green (`npm ci` clean; `npm run typecheck` exit 0; full `npm test` exit 0; Vite
 `npm run build --workspace @elias/iolta` clean, no `node:crypto` in bundle). billable **62** (was 56); iolta signoff
-**9** (iolta total 18+16+7+…+9); `@elias/audit` **16** (new event type, still green); `@elias/auth` 31;
+**9** + authz **7** (+ its existing 18+16+…); `@elias/audit` **16** (new event type, still green); `@elias/auth` 31;
 `@elias/entities` 50; `@elias/money` 22; `@elias/rules` 13; books 252 smoke + 30 + 6 + 21 + 9 + 11 + 5 + audit.
 `grep -c msh.team package-lock.json` = 0. Each `@elias/*` package's `dist/` is gitignored (built by each consumer's
-`pretest`; iolta's now builds money+audit+auth).
+`pretest`; iolta's now builds money+audit+auth+entities). `@elias/auth` now exposes a crypto-free `./roles` subpath.
 
 **Gotchas (carried forward + new):**
 - **NEW — the browser-safety pattern for `@elias/auth` in iolta.** `@elias/auth` (and `@elias/entities`) hash with
@@ -119,6 +138,11 @@ last."
   `@elias/auth` behavior, either (a) keep it type-only + reimplement via `@elias/audit/core` with a Node pinning test
   (the sign-off pattern), or (b) put the value-level `@elias/auth` use in `server.ts` (Node), never in `src/*` that
   App.tsx imports. Verify after: `grep -rl "node:crypto\|createHash\|scryptSync" apps/iolta/dist/assets` must be empty.
+  Third route added this session: (c) a **crypto-free subpath export** — `@elias/auth/roles` is genuinely import-safe
+  in the browser (roles.ts has zero imports). But a subpath is only safe if the target module's WHOLE import graph is
+  crypto-free: `@elias/entities/membership` LOOKS safe but `membership.ts` imports `isEntityId` from `ids.ts` which
+  imports `node:crypto`, so that subpath breaks the Vite build — that's why iolta reimplements the 3-entry membership
+  map and pins it in `test/authz.test.ts` instead. Check the transitive graph before adding a "browser-safe" subpath.
 - **NEW — `stableStringify` (@elias/audit/core) === `canonicalize` (@elias/auth) for JSON-safe input** (both
   recursively key-sort + drop `undefined`; SHA-256 is deterministic), which is WHY the browser-safe digest matches.
   If either serializer changes, the iolta pinning test (`test/signoff.test.ts`) breaks — that's the guardrail; fix
