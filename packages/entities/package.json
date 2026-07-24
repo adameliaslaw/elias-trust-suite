@@ -1,0 +1,27 @@
+{
+  "name": "@elias/entities",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Canonical suite identity: typed, prefixed, opaque firm/client/matter/user IDs with parse/format/validate, a cross-app EntityRegistry, and the firm-membership role reconciliation onto the canonical owner/bookkeeper/read-only set. Zero runtime deps; each app maps its local ids to these.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

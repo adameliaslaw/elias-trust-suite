@@ -26,6 +26,7 @@
 // NOT convert any path's persistence direction.
 //
 // Wiring (server.js): require('./lib/routes/auth')(route, deps).
+const bookEntities = require('../entities');
 module.exports = function registerAuthRoutes(route, deps) {
   const {
     sendJSON, notFound, badRequest, readBody,
@@ -146,7 +147,14 @@ module.exports = function registerAuthRoutes(route, deps) {
 
   // -- companies (household level) --
   route('GET', '/api/companies', (req, res) => {
-    sendJSON(res, 200, companies().map(c => ({ id: c.id, name: c.name, active: c.id === req.companyId })));
+    // `canonicalId` is the suite-wide firm id for this company (@elias/entities),
+    // added additively so the shell / other apps can reference the same firm.
+    sendJSON(res, 200, companies().map(c => ({
+      id: c.id,
+      name: c.name,
+      canonicalId: bookEntities.firmIdFor(c),
+      active: c.id === req.companyId,
+    })));
   });
   route('POST', '/api/companies', async (req, res) => {
     const b = await readBody(req);
