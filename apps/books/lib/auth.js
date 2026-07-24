@@ -1,92 +1,58 @@
-// Password auth: scrypt-hashed password stored in settings, in-memory session
-// tokens delivered via an HttpOnly cookie. Sessions reset on server restart,
-// expire server-side (idle + absolute caps), and are all invalidated when the
-// password changes. Failed logins are throttled per client IP.
-const crypto = require('crypto');
-
-const sessions = new Map();       // token -> { createdAt, lastSeen }
-const loginAttempts = new Map();  // client ip -> { fails, lockedUntil }
+// Books' HTTP auth adapter over the shared @elias/auth identity core.
+//
+// The reusable primitives — scrypt password hashing, the server-side session
+// store (sliding idle + absolute cap, invalidate-all), and the login throttle —
+// now live in @elias/auth (Phase 7 / #26), lifted out of this file so every app
+// in the suite shares ONE definition. What stays here is the HTTP glue those
+// primitives are deliberately free of: pulling the token from the request
+// cookie, deriving the throttle key from the socket address, and the
+// per-deployment auth-disabled env flag. The exported surface is unchanged, so
+// server.js, the route groups, and the tests are untouched.
+//
+// Sessions bind a token to a principal. `username` names a principal in the
+// household record (bookkeeper / read-only); null means the DEFAULT OWNER — the
+// household-shared password, the implicit owner that keeps the pre-roles login
+// working unchanged.
+const { hashPassword, verifyPassword, SessionStore, LoginThrottle, parseCookieHeader } = require('@elias/auth');
 
 const SESSION_IDLE_MS = 7 * 24 * 60 * 60 * 1000;      // sliding inactivity window
 const SESSION_ABSOLUTE_MS = 30 * 24 * 60 * 60 * 1000; // hard cap, matches the cookie Max-Age
 const LOGIN_MAX_FAILS = 5;                            // failures before a lockout
 const LOGIN_LOCK_MS = 15 * 60 * 1000;                 // lockout duration
 
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
-  return `${salt}:${hash}`;
-}
+const store = new SessionStore({ idleMs: SESSION_IDLE_MS, absoluteMs: SESSION_ABSOLUTE_MS });
+const throttle = new LoginThrottle({ maxFails: LOGIN_MAX_FAILS, lockMs: LOGIN_LOCK_MS });
 
-function verifyPassword(password, stored) {
-  if (!stored) return false;
-  const [salt, hash] = String(stored).split(':');
-  if (!salt || !hash) return false;
-  const candidate = crypto.scryptSync(password, salt, 64);
-  const expected = Buffer.from(hash, 'hex');
-  return candidate.length === expected.length && crypto.timingSafeEqual(candidate, expected);
-}
-
-// A session binds a token to a principal. `username` names a principal in
-// global.json (bookkeeper / read-only); null means the DEFAULT OWNER — the
-// household-shared password, which is the implicit owner and keeps the
-// pre-roles login working unchanged.
+// `username` names a principal (bookkeeper / read-only); null is the default
+// owner (household-shared password), preserving the pre-roles login.
 function createSession(username) {
-  const token = crypto.randomBytes(32).toString('hex');
-  const now = Date.now();
-  sessions.set(token, { createdAt: now, lastSeen: now, username: username == null ? null : String(username) });
-  return token;
+  return store.create(username == null ? null : username);
 }
 
 function destroySession(token) {
-  sessions.delete(token);
+  store.destroy(token);
 }
 
 // Drop every session — called when the password changes so a stolen cookie
 // dies with the password it was minted under.
 function clearSessions() {
-  sessions.clear();
-}
-
-function sessionValid(token) {
-  const s = token && sessions.get(token);
-  if (!s) return false;
-  const now = Date.now();
-  if (now - s.lastSeen > SESSION_IDLE_MS || now - s.createdAt > SESSION_ABSOLUTE_MS) {
-    sessions.delete(token);
-    return false;
-  }
-  s.lastSeen = now; // slide the idle window on activity
-  return true;
+  store.clear();
 }
 
 function parseCookies(req) {
-  const out = {};
-  for (const pair of String(req.headers.cookie || '').split(';')) {
-    const idx = pair.indexOf('=');
-    if (idx < 0) continue;
-    const key = pair.slice(0, idx).trim();
-    // A malformed %-escape must not take the request down (same bug class as
-    // the route-param decode): fall back to the raw value, which simply
-    // won't match any session.
-    try { out[key] = decodeURIComponent(pair.slice(idx + 1).trim()); }
-    catch { out[key] = pair.slice(idx + 1).trim(); }
-  }
-  return out;
+  return parseCookieHeader(req.headers && req.headers.cookie);
 }
 
 function isAuthenticated(req) {
-  return sessionValid(parseCookies(req).qb_session);
+  return store.validate(parseCookies(req).qb_session);
 }
 
 // The principal descriptor for a valid session token, or undefined if the token
 // is missing/expired. `{ username: null }` is the default owner (household
 // password); `{ username: 'jane' }` is a named principal. The dispatcher pairs
-// this with global.json to resolve the caller's role.
+// this with the household record to resolve the caller's role.
 function sessionPrincipal(token) {
-  if (!sessionValid(token)) return undefined;
-  const s = sessions.get(token);
-  return { username: s.username == null ? null : s.username };
+  return store.principal(token);
 }
 
 // Explicit opt-out for private/trusted deployments. Read per-request so the
@@ -105,30 +71,21 @@ function clientIp(req) {
 
 // Milliseconds remaining on the caller's lockout, or 0 if they may try.
 function loginLockedMs(req) {
-  const rec = loginAttempts.get(clientIp(req));
-  if (rec && rec.lockedUntil > Date.now()) return rec.lockedUntil - Date.now();
-  return 0;
+  return throttle.lockedMs(clientIp(req));
 }
 
 function recordLoginFail(req) {
-  const ip = clientIp(req);
-  const rec = loginAttempts.get(ip) || { fails: 0, lockedUntil: 0 };
-  rec.fails += 1;
-  if (rec.fails >= LOGIN_MAX_FAILS) {
-    rec.lockedUntil = Date.now() + LOGIN_LOCK_MS;
-    rec.fails = 0;
-  }
-  loginAttempts.set(ip, rec);
+  throttle.recordFail(clientIp(req));
 }
 
 function resetLoginFails(req) {
-  loginAttempts.delete(clientIp(req));
+  throttle.reset(clientIp(req));
 }
 
 // Test hook: wipe all session and rate-limit state.
 function _reset() {
-  sessions.clear();
-  loginAttempts.clear();
+  store.clear();
+  throttle.clear();
 }
 
 module.exports = {
@@ -136,5 +93,5 @@ module.exports = {
   parseCookies, isAuthenticated, sessionPrincipal, authDisabled,
   loginLockedMs, recordLoginFail, resetLoginFails,
   SESSION_IDLE_MS, SESSION_ABSOLUTE_MS, LOGIN_MAX_FAILS, LOGIN_LOCK_MS,
-  _reset, _sessions: sessions
+  _reset, _sessions: store.sessions
 };
