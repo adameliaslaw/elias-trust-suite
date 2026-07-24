@@ -11,6 +11,7 @@ const tax1040 = require('./lib/tax1040');
 const nj1040 = require('./lib/nj1040');
 const { seedIfEmpty } = require('./lib/seed');
 const auth = require('./lib/auth');
+const { roleAllows: roleAllowsPolicy, isRole } = require('@elias/auth');
 const plaid = require('./lib/plaid');
 const { parseBankCSV } = require('./lib/csv');
 const payroll = require('./lib/payroll/service');
@@ -128,7 +129,7 @@ require('./lib/routes/auth')(route, {
 // saveGlobal() and append an auth-flavored principal.* event directly.
 require('./lib/routes/principals')(route, {
   sendJSON, notFound, badRequest, readBody,
-  loadGlobal, saveGlobal, auth, audit, uid, todayISO
+  loadGlobal, saveGlobal, auth, audit, uid, todayISO, isRole
 });
 
 // -- customers --
@@ -358,7 +359,7 @@ require('./lib/routes/audit')(route, {
 // Routes reachable without a session (login flow itself).
 const PUBLIC_ROUTES = new Set(['/api/auth-status', '/api/login']);
 
-// -- roles (Phase 6 / #25) --
+// -- roles (Phase 6 / #25; policy shared via @elias/auth in Phase 7 / #26) --
 // Three household roles resolved and enforced HERE in the dispatcher gate,
 // beside PUBLIC_ROUTES + the auth check — not in the handlers — so a role can
 // never reach a route it is denied. The household-shared password is the
@@ -368,8 +369,12 @@ const PUBLIC_ROUTES = new Set(['/api/auth-status', '/api/login']);
 //   bookkeeper — all day-to-day + money writes, but NOT owner-only routes.
 //   read-only  — GETs only (plus logout); every other mutation is denied.
 //
-// Owner-only routes: principal administration, the household-password endpoint,
-// and the full-data backup export (it dumps every company's secrets).
+// The owner/bookkeeper/read-only role SET and the allow/deny DECISION live in
+// @elias/auth (one definition for the whole suite). What stays app-specific,
+// and is injected as the policy below, is WHICH paths are owner-only and which
+// write a read-only principal may still make (logging out): principal
+// administration, the household-password endpoint, and the full-data backup
+// export (it dumps every company's secrets).
 function isOwnerOnly(pathname) {
   return pathname === '/api/backup'
     || pathname === '/api/password'
@@ -377,10 +382,13 @@ function isOwnerOnly(pathname) {
     || pathname.startsWith('/api/principals/');
 }
 
+const ROLE_POLICY = {
+  isOwnerOnly,
+  isWriteAllowedForReadOnly: (_method, pathname) => pathname === '/api/logout'
+};
+
 function roleAllows(role, method, pathname) {
-  if (isOwnerOnly(pathname)) return role === 'owner';
-  if (role === 'read-only') return method === 'GET' || pathname === '/api/logout';
-  return true; // owner + bookkeeper: everything that is not owner-only
+  return roleAllowsPolicy(role, method, pathname, ROLE_POLICY);
 }
 
 // Resolve the caller's role from a valid session + the household file. Returns

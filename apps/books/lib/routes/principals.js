@@ -21,10 +21,11 @@
 module.exports = function registerPrincipalRoutes(route, deps) {
   const {
     sendJSON, notFound, badRequest, readBody,
-    loadGlobal, saveGlobal, auth, audit, uid, todayISO
+    loadGlobal, saveGlobal, auth, audit, uid, todayISO, isRole
   } = deps;
 
-  const ROLES = ['owner', 'bookkeeper', 'read-only'];
+  // The valid-role check is the canonical one from @elias/auth (Phase 7 / #26),
+  // injected via deps so the role SET is single-sourced with the dispatcher gate.
   const publicView = (p) => ({ id: p.id, username: p.username, name: p.name || '', role: p.role, createdAt: p.createdAt });
 
   route('GET', '/api/principals', (req, res) => {
@@ -38,7 +39,7 @@ module.exports = function registerPrincipalRoutes(route, deps) {
     const role = String(b.role || '');
     const password = String(b.password || '');
     if (!username) return badRequest(res, 'A username is required');
-    if (!ROLES.includes(role)) return badRequest(res, 'Role must be owner, bookkeeper, or read-only');
+    if (!isRole(role)) return badRequest(res, 'Role must be owner, bookkeeper, or read-only');
     if (password.length < 6) return badRequest(res, 'Password must be at least 6 characters');
     const g = loadGlobal();
     g.principals = g.principals || [];
@@ -59,7 +60,7 @@ module.exports = function registerPrincipalRoutes(route, deps) {
     const p = (g.principals || []).find(x => x.id === params.id);
     if (!p) return notFound(res);
     if ('role' in b) {
-      if (!ROLES.includes(String(b.role))) return badRequest(res, 'Role must be owner, bookkeeper, or read-only');
+      if (!isRole(String(b.role))) return badRequest(res, 'Role must be owner, bookkeeper, or read-only');
       p.role = String(b.role);
     }
     if ('name' in b) p.name = String(b.name || '').trim();

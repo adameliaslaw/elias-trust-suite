@@ -1,0 +1,27 @@
+{
+  "name": "@elias/auth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Suite-wide identity core: password hashing, server-side sessions, brute-force throttling, the canonical owner/bookkeeper/read-only role model, and a uniform, audited attorney review/sign-off primitive for compliance outputs. Transport-agnostic; apps supply the HTTP glue.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
